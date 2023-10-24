@@ -13,18 +13,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os
-import shutil
 import pyscf
 import time
 import cupy
 import numpy as np
-import argparse
 import scipy
 import ctypes
 from pyscf import lib, gto
 from pyscf.scf import _vhf
-from pyscf.dft import rks
 from gpu4pyscf.df import int3c2e
 from gpu4pyscf.scf.hf import BasisProdCache
 from gpu4pyscf.lib.cupy_helper import load_library, block_c2s_diag
@@ -271,7 +267,6 @@ def eval_chelpg_layer_gpu(mf, deltaR=0.3, Rhead=2.8, ifqchem=True):
     Returns:
         numpy.array: charges
     """
-    import time
     t0 = time.process_time()
     t0w = time.time()
     BOHR = 0.52917721092  # Angstroms
