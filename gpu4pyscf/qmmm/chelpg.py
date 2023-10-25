@@ -369,25 +369,3 @@ def eval_chelpg_layer_gpu(mf, deltaR=0.3, Rhead=2.8, ifqchem=True):
     print("Total wall time: ", t6w - t0w)
     return q
 
-if __name__ == '__main__':
-    from gpu4pyscf.dft import rks
-    
-    mol = gto.Mole()
-    mol.verbose = 0
-    mol.output = None
-    mol.atom = [
-        [1 , (1. ,  0.     , 0.000)],
-        [1 , (0. ,  1.     , 0.000)],
-        [1 , (0. , -1.517  , 1.177)],
-        [1 , (0. ,  1.517  , 1.177)] ]
-    mol.basis = '631g'
-    mol.unit = 'B'
-    mol.build()
-    mol.verbose = 6
-    
-    xc = 'b3lyp'
-    mf = rks.RKS(mol, xc=xc)
-    mf.grids.level = 5
-    mf.kernel()
-    charge = eval_chelpg_layer_gpu(mf)
-    print(charge) # [ 0.04402311  0.11333945 -0.25767919  0.10031663]
