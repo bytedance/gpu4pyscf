@@ -28,9 +28,9 @@ cmake --build build/temp.gpu4pyscf -j 4
 CURRENT_PATH=`pwd`
 export PYTHONPATH="${PYTHONPATH}:${CURRENT_PATH}"
 ```
-Then install cutensor for acceleration
+Then install cupy and cutensor for acceleration (please change the cutensor version accordingly)
 ```sh
-pip3 install cutensor-cu11
+pip3 install cupy cutensor-cu11
 ```
 
 The package also provides multiple dockerfiles in ```dockerfiles```. One can use them as references to create the compilation envrionment.
