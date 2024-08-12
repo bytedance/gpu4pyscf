@@ -17,6 +17,7 @@
 #include "constant.cuh"
 
 __constant__ BasisProdCache c_bpcache;
+__constant__ BasisProdCacheSinglePrecision c_bpcache_single;
 __constant__ int16_t c_idx4c[NFffff*3];
 __constant__ int c_idx[TOT_NF*3]; 
 __constant__ int c_l_locs[GPU_LMAX+2];

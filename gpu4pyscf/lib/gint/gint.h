@@ -274,6 +274,29 @@ typedef struct {
 } BasisProdCache;
 
 
+struct BasisProdCacheSinglePrecision {
+    int nbas;  // len(bas_coords)
+    int ncptype;  // len(cptype)
+    ContractionProdType *cptype;
+    int *bas_pairs_locs;  // len(bas_pair2bra) = sum(cptype[:].nparis)
+    int *primitive_pairs_locs;  // len(a12) = sum(cptype[:].nparis*cptype[:].nprim_12)
+    int *bas_pair2shls;
+    float *aexyz;
+
+    // Data below held on GPU global memory
+    float *bas_coords;  // basis coordinates
+    int *bas_pair2bra;
+    int *bas_pair2ket;
+    int *ao_loc;
+    float *a12;
+    float *e12;
+    float *x12;
+    float *y12;
+    float *z12;
+    float *a1;
+    float *a2;
+};
+
 typedef struct {
         int stride_j;
         int stride_k;
@@ -302,6 +325,26 @@ typedef struct {
         double* __restrict__ dm_sh;
         int nshls;
 } JKMatrix;
+
+#ifdef __cplusplus
+template<typename FloatType>
+struct JKMatrixMixedPrecision {
+        int nao;
+        // int naux;
+        int n_dm;
+        FloatType* vj;
+        FloatType* vk;
+        const FloatType* __restrict__ dm;
+        // double* __restrict__ rhoj;
+        // double* __restrict__ rhok;
+        // int ao_offsets_i;
+        // int ao_offsets_j;
+        // int ao_offsets_k;
+        // int ao_offsets_l;
+        // double* __restrict__ dm_sh;
+        // int nshls;
+};
+#endif
 
 typedef void (*FPtr_CPUkernel_jk)(double *g, double **dm, double **v,
                                   int *shls, GINTEnvVars *envs, int *ibuf);

@@ -23,10 +23,9 @@
 
 //extern __constant__ GINTEnvVars c_envs;
 extern __constant__ BasisProdCache c_bpcache;
+extern __constant__ BasisProdCacheSinglePrecision c_bpcache_single;
 extern __constant__ int16_t c_idx4c[NFffff*3];
 
-/*
-__constant__ GINTEnvVars c_envs;
-__constant__ BasisProdCache c_bpcache;
-__constant__ int16_t c_idx4c[NFffff*3];
-*/
+template <typename FloatType> class BasisProdCacheGetter;
+template <> class BasisProdCacheGetter<double> { public: __device__ static BasisProdCache get() { return c_bpcache; } };
+template <> class BasisProdCacheGetter<float > { public: __device__ static BasisProdCacheSinglePrecision get() { return c_bpcache_single; } };

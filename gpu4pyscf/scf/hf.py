@@ -47,6 +47,8 @@ def get_jk(mol, dm, hermi=1, vhfopt=None, with_j=True, with_k=True, omega=None,
     '''Compute J, K matrices with CPU-GPU hybrid algorithm
     '''
     log = logger.new_logger(mol, verbose)
+    # test_log = logger.new_logger(mol, logger.param.VERBOSE_DEBUG + 4)
+    # test_cput0 = test_log.init_timer()
     cput0 = log.init_timer()
     if hermi != 1:
         raise NotImplementedError('JK-builder only supports hermitian density matrix')
@@ -62,17 +64,23 @@ def get_jk(mol, dm, hermi=1, vhfopt=None, with_j=True, with_k=True, omega=None,
     dms = dm0.reshape(-1,nao0,nao0)
     dms = cupy.einsum('pi,xij,qj->xpq', coeff, dms, coeff.conj())
     dms = cupy.asarray(dms, order='C')
+    dms_single_precision = cupy.asarray(dms, dtype=cupy.float32, order='C')
     n_dm = dms.shape[0]
     scripts = []
     vj = vk = None
     vj_ptr = vk_ptr = pyscf_lib.c_null_ptr()
+    vj_single_precision_ptr = vk_single_precision_ptr = pyscf_lib.c_null_ptr()
     if with_j:
         vj = cupy.zeros(dms.shape).transpose(0, 2, 1)
         vj_ptr = ctypes.cast(vj.data.ptr, ctypes.c_void_p)
+        vj_single_precision = cupy.zeros(dms.shape, dtype=cupy.float32).transpose(0, 2, 1)
+        vj_single_precision_ptr = ctypes.cast(vj_single_precision.data.ptr, ctypes.c_void_p)
         scripts.append('ji->s2kl')
     if with_k:
         vk = cupy.zeros(dms.shape).transpose(0, 2, 1)
         vk_ptr = ctypes.cast(vk.data.ptr, ctypes.c_void_p)
+        vk_single_precision = cupy.zeros(dms.shape, dtype=cupy.float32).transpose(0, 2, 1)
+        vk_single_precision_ptr = ctypes.cast(vk_single_precision.data.ptr, ctypes.c_void_p)
         if hermi == 1:
             scripts.append('jk->s2il')
         else:
@@ -151,8 +159,19 @@ def get_jk(mol, dm, hermi=1, vhfopt=None, with_j=True, with_k=True, omega=None,
             #    continue
             nbins_ij = len(bins_locs_ij) - 1
             nbins_kl = len(bins_locs_kl) - 1
-            err = fn(vhfopt.bpcache, vj_ptr, vk_ptr,
+            # test_cput0 = test_log.timer_debug1('Henry timer before kernel call', *cput0)
+            # print("", end = "", flush = True)
+
+            if hasattr(mol, 'single_double_precision_threshold'):
+                log_single_double_precision_threshold = np.log(mol.single_double_precision_threshold)
+            else:
+                log_single_double_precision_threshold = log_cutoff
+
+            err = fn(vhfopt.bpcache, vhfopt.bpcache_single,
+                     vj_ptr, vk_ptr,
                      ctypes.cast(dms.data.ptr, ctypes.c_void_p),
+                     vj_single_precision_ptr, vk_single_precision_ptr,
+                     ctypes.cast(dms_single_precision.data.ptr, ctypes.c_void_p),
                      ctypes.c_int(nao), ctypes.c_int(n_dm),
                      bins_locs_ij.ctypes.data_as(ctypes.c_void_p),
                      bins_locs_kl.ctypes.data_as(ctypes.c_void_p),
@@ -164,12 +183,14 @@ def get_jk(mol, dm, hermi=1, vhfopt=None, with_j=True, with_k=True, omega=None,
                      ctypes.c_int(cp_kl_id),
                      ctypes.c_double(omega),
                      ctypes.c_double(log_cutoff),
+                     ctypes.c_double(log_single_double_precision_threshold),
                      ctypes.c_double(sub_dm_cond),
                      ctypes.cast(dm_shl.data.ptr, ctypes.c_void_p),
                      ctypes.c_int(nshls),
                      ctypes.cast(log_q_ij.data.ptr, ctypes.c_void_p),
                      ctypes.cast(log_q_kl.data.ptr, ctypes.c_void_p)
                      )
+            # test_cput0 = test_log.timer_debug1('Henry timer after kernel call', *cput0)
             if err != 0:
                 detail = f'CUDA Error for ({l_symb[li]}{l_symb[lj]}|{l_symb[lk]}{l_symb[ll]})'
                 raise RuntimeError(detail)
@@ -178,6 +199,9 @@ def get_jk(mol, dm, hermi=1, vhfopt=None, with_j=True, with_k=True, omega=None,
             #           time.perf_counter() - t0)
             #print(li, lj, lk, ll, time.perf_counter() - t0)
             #exit()
+
+    vj += vj_single_precision
+    vk += vk_single_precision
 
     if with_j:
         vj_ao = []
@@ -858,12 +882,15 @@ class _VHFOpt:
         ao_loc = mol.ao_loc_nr(cart=True)
         ncptype = len(log_qs)
         self.bpcache = ctypes.POINTER(BasisProdCache)()
+        self.bpcache_single = ctypes.POINTER(BasisProdCacheSinglePrecision)()
         if diag_block_with_triu:
             scale_shellpair_diag = 1.
         else:
             scale_shellpair_diag = 0.5
-        libgvhf.GINTinit_basis_prod(
-            ctypes.byref(self.bpcache), ctypes.c_double(scale_shellpair_diag),
+        libgvhf.GINTinit_basis_prod_mixed_precision(
+            ctypes.byref(self.bpcache),
+            ctypes.byref(self.bpcache_single),
+            ctypes.c_double(scale_shellpair_diag),
             ao_loc.ctypes.data_as(ctypes.c_void_p),
             self.bas_pair2shls.ctypes.data_as(ctypes.c_void_p),
             self.bas_pairs_locs.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(ncptype),
@@ -879,7 +906,7 @@ class _VHFOpt:
 
     def clear(self):
         _vhf.VHFOpt.__del__(self)
-        libgvhf.GINTdel_basis_prod(ctypes.byref(self.bpcache))
+        libgvhf.GINTdel_basis_prod_mixed_precision(ctypes.byref(self.bpcache), ctypes.byref(self.bpcache_single))
         return self
 
     def __del__(self):
@@ -889,6 +916,9 @@ class _VHFOpt:
             pass
 
 class BasisProdCache(ctypes.Structure):
+    pass
+
+class BasisProdCacheSinglePrecision(ctypes.Structure):
     pass
 
 def basis_seg_contraction(mol, allow_replica=False):

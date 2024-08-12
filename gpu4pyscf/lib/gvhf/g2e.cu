@@ -27,8 +27,11 @@
 #include "gint/g2e.cu"
 #include "gint/reduction.cu"
 
-template <int NROOTS, int GSIZE> __global__
-void GINTint2e_jk_kernel(GINTEnvVars envs, JKMatrix jk, BasisProdOffsets offsets)
+template <int NROOTS, int GSIZE, typename FloatType>
+__global__
+void GINTint2e_jk_kernel(GINTEnvVars envs,
+                         JKMatrixMixedPrecision<FloatType> jk,
+                         BasisProdOffsets offsets)
 {
     int ntasks_ij = offsets.ntasks_ij;
     int ntasks_kl = offsets.ntasks_kl;
@@ -45,9 +48,9 @@ void GINTint2e_jk_kernel(GINTEnvVars envs, JKMatrix jk, BasisProdOffsets offsets
     if (bas_ij < bas_kl) {
         active = false;
     }
-    double norm = envs.fac;
+    FloatType norm = envs.fac;
     if (bas_ij == bas_kl) {
-        norm *= .5;
+        norm *= static_cast<FloatType>(0.5);
     }
 
     int nprim_ij = envs.nprim_ij;
@@ -61,7 +64,7 @@ void GINTint2e_jk_kernel(GINTEnvVars envs, JKMatrix jk, BasisProdOffsets offsets
     int ksh = bas_pair2bra[bas_kl];
     int lsh = bas_pair2ket[bas_kl];
 
-    double g[GSIZE];
+    FloatType g[GSIZE];
 
     int ij, kl;
     int as_ish, as_jsh, as_ksh, as_lsh;
@@ -79,11 +82,11 @@ void GINTint2e_jk_kernel(GINTEnvVars envs, JKMatrix jk, BasisProdOffsets offsets
         as_ksh = lsh;
         as_lsh = ksh;
     }
-    if(!active) norm = 0.0;
+    if (!active) norm = static_cast<FloatType>(0.0);
     for (ij = prim_ij; ij < prim_ij+nprim_ij; ++ij) {
     for (kl = prim_kl; kl < prim_kl+nprim_kl; ++kl) {
-        if(active) GINTg0_2e_2d4d<NROOTS>(envs, g, norm, as_ish, as_jsh, as_ksh, as_lsh, ij, kl);
-        if(active) GINTkernel_direct_getjk<NROOTS, GSIZE>(envs, jk, g, ish, jsh, ksh, lsh);
+        if (active) GINTg0_2e_2d4d<NROOTS, FloatType>(envs, g, norm, as_ish, as_jsh, as_ksh, as_lsh, ij, kl);
+        if (active) GINTkernel_direct_getjk<NROOTS, GSIZE, FloatType>(envs, jk, g, ish, jsh, ksh, lsh);
     } }
 }
 

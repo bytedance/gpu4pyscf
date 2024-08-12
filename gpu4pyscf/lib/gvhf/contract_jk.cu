@@ -23,7 +23,8 @@
 #include "gint/reduction.cu"
 #include "gvhf.h"
 
-template <int NROOTS, int GSIZE> __device__
+template <int NROOTS, int GSIZE>
+__device__
 static void GINTkernel_direct_getjk(GINTEnvVars envs, JKMatrix jk, double* __restrict__ g,
                       int ish, int jsh, int ksh, int lsh)
 {
@@ -55,7 +56,7 @@ static void GINTkernel_direct_getjk(GINTEnvVars envs, JKMatrix jk, double* __res
     }
     int16_t *idy = idx + nf;
     int16_t *idz = idx + nf * 2;
-    
+
     if (vk == NULL) {
         for (i_dm = 0; i_dm < n_dm; ++i_dm) {
             int ngout = 0;
@@ -74,7 +75,7 @@ static void GINTkernel_direct_getjk(GINTEnvVars envs, JKMatrix jk, double* __res
                             for (int r = 0; r < NROOTS; r++){
                                 s += g[ix+r] * g[iy+r] * g[iz+r];
                             }
-                            double v_ij  = s * d_kl;   
+                            double v_ij  = s * d_kl;
                             atomicAdd(vj+i+nao*j, v_ij);
                             v_kl += s * dm[i+j*nao];
                         }
@@ -88,7 +89,7 @@ static void GINTkernel_direct_getjk(GINTEnvVars envs, JKMatrix jk, double* __res
         }
         return;
     }
-    
+
     if (vj == NULL){
         for (i_dm = 0; i_dm < n_dm; ++i_dm) {
             int ngout = 0;
@@ -115,10 +116,10 @@ static void GINTkernel_direct_getjk(GINTEnvVars envs, JKMatrix jk, double* __res
                     double d_ik[GPU_AO_NF];
                     double v_il[GPU_AO_NF];
                     double d_il[GPU_AO_NF];
-                    for (i = 0; i < i1-i0; ++i){ 
-                        v_il[i] = 0.0; 
+                    for (i = 0; i < i1-i0; ++i){
+                        v_il[i] = 0.0;
                         d_il[i] = dm[i+i0+l*nao];
-                        v_ik[i] = 0.0; 
+                        v_ik[i] = 0.0;
                         d_ik[i] = dm[i+i0+k*nao];
                     }
 
@@ -140,9 +141,9 @@ static void GINTkernel_direct_getjk(GINTEnvVars envs, JKMatrix jk, double* __res
                         atomicAdd(vk+j+nao*k, v_jk);
                         atomicAdd(vk+j+nao*l, v_jl);
                     }
-                    for (i = 0; i < i1-i0; i++){ 
-                        atomicAdd(vk+i+i0+nao*k, v_ik[i]); 
-                        atomicAdd(vk+i+i0+nao*l, v_il[i]);  
+                    for (i = 0; i < i1-i0; i++){
+                        atomicAdd(vk+i+i0+nao*k, v_ik[i]);
+                        atomicAdd(vk+i+i0+nao*l, v_il[i]);
                     }
                     ngout += nfij;
                 }
@@ -164,13 +165,13 @@ static void GINTkernel_direct_getjk(GINTEnvVars envs, JKMatrix jk, double* __res
     for (i_dm = 0; i_dm < n_dm; ++i_dm) {
         int ngout = 0;
         for (l = l0; l < l1; ++l) {
-            for (i = 0; i < i1-i0; ++i){ 
-                v_il[i] = 0.0; 
+            for (i = 0; i < i1-i0; ++i){
+                v_il[i] = 0.0;
                 d_il[i] = dm[i+i0+l*nao];
             }
             for (k = k0; k < k1; ++k) {
-                for (i = 0; i < i1-i0; ++i){ 
-                    v_ik[i] = 0.0; 
+                for (i = 0; i < i1-i0; ++i){
+                    v_ik[i] = 0.0;
                     d_ik[i] = dm[i+i0+k*nao];
                 }
                 double v_kl = 0;
@@ -180,7 +181,7 @@ static void GINTkernel_direct_getjk(GINTEnvVars envs, JKMatrix jk, double* __res
                     double v_jl = 0.0;
                     double d_jk = dm[j+nao*k];
                     double d_jl = dm[j+nao*l];
-                    
+
                     for (i = i0; i < i1; ++i, ++n) {
                         int ip = i - i0;
                         int ng = n + ngout;
@@ -191,7 +192,7 @@ static void GINTkernel_direct_getjk(GINTEnvVars envs, JKMatrix jk, double* __res
                         for (int r = 0; r < NROOTS; r++){
                             s += g[ix+r] * g[iy+r] * g[iz+r];
                         }
-                        double v_ij  = s * d_kl;   
+                        double v_ij  = s * d_kl;
                         atomicAdd(vj+i+nao*j, v_ij);
 
                         v_il[ip] += s * d_jk;
@@ -205,14 +206,212 @@ static void GINTkernel_direct_getjk(GINTEnvVars envs, JKMatrix jk, double* __res
                     atomicAdd(vk+j+nao*k, v_jk);
                     atomicAdd(vk+j+nao*l, v_jl);
                 }
-                for (i = 0; i < i1-i0; i++){ 
-                    atomicAdd(vk+i+i0+nao*k, v_ik[i]); 
+                for (i = 0; i < i1-i0; i++){
+                    atomicAdd(vk+i+i0+nao*k, v_ik[i]);
                 }
                 atomicAdd(vj+k+nao*l, v_kl);
                 ngout += nfij;
             }
-            for (i = 0; i < i1-i0; i++){ 
-                atomicAdd(vk+i+i0+nao*l, v_il[i]);  
+            for (i = 0; i < i1-i0; i++){
+                atomicAdd(vk+i+i0+nao*l, v_il[i]);
+            }
+        }
+
+        dm += nao * nao;
+        vj += nao * nao;
+        vk += nao * nao;
+    }
+}
+
+template <int NROOTS, int GSIZE, typename FloatType>
+__device__
+static void GINTkernel_direct_getjk(GINTEnvVars envs,
+                                    JKMatrixMixedPrecision<FloatType> jk,
+                                    FloatType* __restrict__ g,
+                                    int ish, int jsh, int ksh, int lsh)
+{
+    const int *ao_loc = c_bpcache.ao_loc;
+    const int i0 = ao_loc[ish  ];
+    const int i1 = ao_loc[ish+1];
+    const int j0 = ao_loc[jsh  ];
+    const int j1 = ao_loc[jsh+1];
+    const int k0 = ao_loc[ksh  ];
+    const int k1 = ao_loc[ksh+1];
+    const int l0 = ao_loc[lsh  ];
+    const int l1 = ao_loc[lsh+1];
+    const int nfi = i1 - i0;
+    const int nfj = j1 - j0;
+    const int nfij = nfi * nfj;
+
+    const int nao = jk.nao;
+
+    const int n_dm = jk.n_dm;
+    FloatType* vj = jk.vj;
+    FloatType* vk = jk.vk;
+    const FloatType* __restrict__ dm = jk.dm;
+
+    const int nf = envs.nf;
+    const int16_t *idx = (nf > NFffff) ? envs.idx : c_idx4c;
+    const int16_t *idy = idx + nf;
+    const int16_t *idz = idx + nf * 2;
+
+    if (vk == NULL) {
+        for (int i_dm = 0; i_dm < n_dm; ++i_dm) {
+            int ngout = 0;
+            for (int l = l0; l < l1; ++l) {
+                for (int k = k0; k < k1; ++k) {
+                    FloatType v_kl = 0;
+                    const FloatType d_kl = dm[k+nao*l];
+                    for (int n = 0, j = j0; j < j1; ++j) {
+                        for (int i = i0; i < i1; ++i, ++n) {
+                            const int ng = n + ngout;
+                            const int ix = idx[ng];
+                            const int iy = idy[ng];
+                            const int iz = idz[ng];
+                            FloatType s = static_cast<FloatType>(0.0);
+#pragma unroll
+                            for (int r = 0; r < NROOTS; r++){
+                                s += g[ix+r] * g[iy+r] * g[iz+r];
+                            }
+                            const FloatType v_ij  = s * d_kl;
+                            atomicAdd(vj+i+nao*j, v_ij);
+                            v_kl += s * dm[i+j*nao];
+                        }
+                    }
+                    atomicAdd(vj+k+nao*l, v_kl);
+                    ngout += nfij;
+                }
+            }
+            dm += nao * nao;
+            vj += nao * nao;
+        }
+        return;
+    }
+
+    if (vj == NULL){
+        for (int i_dm = 0; i_dm < n_dm; ++i_dm) {
+            int ngout = 0;
+            for (int l = l0; l < l1; ++l) {
+                for (int k = k0; k < k1; ++k) {
+                    FloatType gout[GPU_AO_NF * GPU_AO_NF];
+                    for (int n = 0, j = j0; j < j1; ++j) {
+                        const int jp = j - j0;
+                        for (int i = i0; i < i1; ++i, ++n) {
+                            const int ip = i - i0;
+                            const int ng = n + ngout;
+                            const int ix = idx[ng];
+                            const int iy = idy[ng];
+                            const int iz = idz[ng];
+                            FloatType s = static_cast<FloatType>(0.0);
+                            for (int r = 0; r < NROOTS; r++){
+                                s += g[ix+r] * g[iy+r] * g[iz+r];
+                            }
+                            gout[ip + GPU_AO_NF * jp] = s;
+                        }
+                    }
+
+                    FloatType v_ik[GPU_AO_NF];
+                    FloatType d_ik[GPU_AO_NF];
+                    FloatType v_il[GPU_AO_NF];
+                    FloatType d_il[GPU_AO_NF];
+                    for (int i = 0; i < i1-i0; ++i){
+                        v_il[i] = 0.0;
+                        d_il[i] = dm[i+i0+l*nao];
+                        v_ik[i] = 0.0;
+                        d_ik[i] = dm[i+i0+k*nao];
+                    }
+
+                    for (int j = j0; j < j1; ++j){
+                        const int jp = j - j0;
+                        FloatType v_jk = 0.0;
+                        FloatType v_jl = 0.0;
+                        const FloatType d_jk = dm[j+nao*k];
+                        const FloatType d_jl = dm[j+nao*l];
+                        for (int i = i0; i < i1; ++i){
+                            const int ip = i - i0;
+                            const FloatType s = gout[ip + GPU_AO_NF * jp];
+                            v_il[ip] += s * d_jk;
+                            v_ik[ip] += s * d_jl;
+
+                            v_jl += s * d_ik[ip];
+                            v_jk += s * d_il[ip];
+                        }
+                        atomicAdd(vk+j+nao*k, v_jk);
+                        atomicAdd(vk+j+nao*l, v_jl);
+                    }
+                    for (int i = 0; i < i1-i0; i++){
+                        atomicAdd(vk+i+i0+nao*k, v_ik[i]);
+                        atomicAdd(vk+i+i0+nao*l, v_il[i]);
+                    }
+                    ngout += nfij;
+                }
+            }
+            dm += nao * nao;
+            vk += nao * nao;
+        }
+        return;
+
+    }
+
+    FloatType v_il[GPU_AO_NF];
+    FloatType v_ik[GPU_AO_NF];
+
+    FloatType d_ik[GPU_AO_NF];
+    FloatType d_il[GPU_AO_NF];
+
+    // vj != NULL and vk != NULL
+    for (int i_dm = 0; i_dm < n_dm; ++i_dm) {
+        int ngout = 0;
+        for (int l = l0; l < l1; ++l) {
+            for (int i = 0; i < i1-i0; ++i){
+                v_il[i] = 0.0;
+                d_il[i] = dm[i+i0+l*nao];
+            }
+            for (int k = k0; k < k1; ++k) {
+                for (int i = 0; i < i1-i0; ++i){
+                    v_ik[i] = 0.0;
+                    d_ik[i] = dm[i+i0+k*nao];
+                }
+                FloatType v_kl = 0;
+                const FloatType d_kl = dm[k+nao*l];
+                for (int n = 0, j = j0; j < j1; ++j) {
+                    FloatType v_jk = 0.0;
+                    FloatType v_jl = 0.0;
+                    const FloatType d_jk = dm[j+nao*k];
+                    const FloatType d_jl = dm[j+nao*l];
+
+                    for (int i = i0; i < i1; ++i, ++n) {
+                        const int ip = i - i0;
+                        const int ng = n + ngout;
+                        const int ix = idx[ng];
+                        const int iy = idy[ng];
+                        const int iz = idz[ng];
+                        FloatType s = static_cast<FloatType>(0.0);
+                        for (int r = 0; r < NROOTS; r++){
+                            s += g[ix+r] * g[iy+r] * g[iz+r];
+                        }
+                        const FloatType v_ij  = s * d_kl;
+                        atomicAdd(vj+i+nao*j, v_ij);
+
+                        v_il[ip] += s * d_jk;
+                        v_ik[ip] += s * d_jl;
+
+                        v_jl += s * d_ik[ip];
+                        v_jk += s * d_il[ip];
+
+                        v_kl += s * dm[i+j*nao];
+                    }
+                    atomicAdd(vk+j+nao*k, v_jk);
+                    atomicAdd(vk+j+nao*l, v_jl);
+                }
+                for (int i = 0; i < i1-i0; i++){
+                    atomicAdd(vk+i+i0+nao*k, v_ik[i]);
+                }
+                atomicAdd(vj+k+nao*l, v_kl);
+                ngout += nfij;
+            }
+            for (int i = 0; i < i1-i0; i++){
+                atomicAdd(vk+i+i0+nao*l, v_il[i]);
             }
         }
 
@@ -523,7 +722,7 @@ static int is_skip(JKMatrix jk, double log_q_ij, double log_q_kl, int ish, int j
     max_dm = MAX(max_dm, jk.dm_sh[jsh * nshls + ksh]);
     max_dm = MAX(max_dm, jk.dm_sh[ish * nshls + lsh]);
     max_dm = MAX(max_dm, jk.dm_sh[jsh * nshls + lsh]);
-    
+
     if(log_q_ij + log_q_kl + max_dm < log_cutoff){
         return 1;
     }
