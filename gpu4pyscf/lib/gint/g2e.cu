@@ -431,21 +431,26 @@ static void GINTg0_2e_2d4d(GINTEnvVars envs, double* __restrict__ g, double norm
 
 template <int NROOTS, typename FloatType>
 __device__
-static void GINTg0_2e_2d4d(GINTEnvVars envs, FloatType* __restrict__ g, FloatType norm, int ish, int jsh, int ksh, int lsh, int prim_ij, int prim_kl)
+static void GINTg0_2e_2d4d(const GINTEnvVars envs, FloatType* __restrict__ g, const FloatType norm,
+                           const int prim_ij, const int prim_kl, const int bas_ij, const int bas_kl)
 {
-    const FloatType* __restrict__ a12 = BasisProdCacheGetter<FloatType>::get().a12;
-    const FloatType* __restrict__ e12 = BasisProdCacheGetter<FloatType>::get().e12;
-    const FloatType* __restrict__ x12 = BasisProdCacheGetter<FloatType>::get().x12;
-    const FloatType* __restrict__ y12 = BasisProdCacheGetter<FloatType>::get().y12;
-    const FloatType* __restrict__ z12 = BasisProdCacheGetter<FloatType>::get().z12;
-    const FloatType aij = a12[prim_ij];
-    const FloatType xij = x12[prim_ij];
-    const FloatType yij = y12[prim_ij];
-    const FloatType zij = z12[prim_ij];
-    const FloatType akl = a12[prim_kl];
-    const FloatType xkl = x12[prim_kl];
-    const FloatType ykl = y12[prim_kl];
-    const FloatType zkl = z12[prim_kl];
+    const FloatType* __restrict__ d_a12 = BasisProdCacheGetter<FloatType>::get().d_a12;
+    const FloatType* __restrict__ d_e12 = BasisProdCacheGetter<FloatType>::get().d_e12;
+    const FloatType* __restrict__ d_x12 = BasisProdCacheGetter<FloatType>::get().d_x12;
+    const FloatType* __restrict__ d_y12 = BasisProdCacheGetter<FloatType>::get().d_y12;
+    const FloatType* __restrict__ d_z12 = BasisProdCacheGetter<FloatType>::get().d_z12;
+    const FloatType* __restrict__ d_a1 = BasisProdCacheGetter<FloatType>::get().d_a1;
+    const FloatType* __restrict__ d_x1 = BasisProdCacheGetter<FloatType>::get().d_x1;
+    const FloatType* __restrict__ d_y1 = BasisProdCacheGetter<FloatType>::get().d_y1;
+    const FloatType* __restrict__ d_z1 = BasisProdCacheGetter<FloatType>::get().d_z1;
+    const FloatType aij = d_a12[prim_ij];
+    const FloatType xij = d_x12[prim_ij];
+    const FloatType yij = d_y12[prim_ij];
+    const FloatType zij = d_z12[prim_ij];
+    const FloatType akl = d_a12[prim_kl];
+    const FloatType xkl = d_x12[prim_kl];
+    const FloatType ykl = d_y12[prim_kl];
+    const FloatType zkl = d_z12[prim_kl];
 
     const FloatType xijxkl = xij - xkl;
     const FloatType yijykl = yij - ykl;
@@ -457,8 +462,8 @@ static void GINTg0_2e_2d4d(GINTEnvVars envs, FloatType* __restrict__ g, FloatTyp
     const FloatType theta = omega > static_cast<FloatType>(0.0) ? omega * omega / (omega * omega + a0) : static_cast<FloatType>(1.0);
     a0 *= theta;
 
-    const FloatType eij = e12[prim_ij];
-    const FloatType ekl = e12[prim_kl];
+    const FloatType eij = d_e12[prim_ij];
+    const FloatType ekl = d_e12[prim_kl];
     const FloatType fac = eij * ekl * sqrt(a0 / (a1 * a1 * a1));
     const FloatType x = a0 * (xijxkl * xijxkl + yijykl * yijykl + zijzkl * zijzkl);
     double uw[NROOTS*2];
@@ -471,16 +476,34 @@ static void GINTg0_2e_2d4d(GINTEnvVars envs, FloatType* __restrict__ g, FloatTyp
     FloatType* __restrict__ gy = g + envs.g_size;
     FloatType* __restrict__ gz = g + envs.g_size * 2;
 
-    const int nbas = BasisProdCacheGetter<FloatType>::get().nbas;
-    FloatType* __restrict__ bas_x = BasisProdCacheGetter<FloatType>::get().bas_coords;
-    FloatType* __restrict__ bas_y = bas_x + nbas;
-    FloatType* __restrict__ bas_z = bas_y + nbas;
-    const FloatType xi = bas_x[ish];
-    const FloatType yi = bas_y[ish];
-    const FloatType zi = bas_z[ish];
-    const FloatType xk = bas_x[ksh];
-    const FloatType yk = bas_y[ksh];
-    const FloatType zk = bas_z[ksh];
+    const FloatType ai = d_a1[prim_ij];
+    const FloatType aj = aij - ai;
+    const FloatType xi_before_rotate = d_x1[bas_ij];
+    const FloatType yi_before_rotate = d_y1[bas_ij];
+    const FloatType zi_before_rotate = d_z1[bas_ij];
+    const FloatType xj_before_rotate = (xij * aij - xi_before_rotate * ai) / aj;
+    const FloatType yj_before_rotate = (yij * aij - yi_before_rotate * ai) / aj;
+    const FloatType zj_before_rotate = (zij * aij - zi_before_rotate * ai) / aj;
+    const FloatType ak = d_a1[prim_kl];
+    const FloatType al = akl - ak;
+    const FloatType xk_before_rotate = d_x1[bas_kl];
+    const FloatType yk_before_rotate = d_y1[bas_kl];
+    const FloatType zk_before_rotate = d_z1[bas_kl];
+    const FloatType xl_before_rotate = (xkl * akl - xk_before_rotate * ak) / al;
+    const FloatType yl_before_rotate = (ykl * akl - yk_before_rotate * ak) / al;
+    const FloatType zl_before_rotate = (zkl * akl - zk_before_rotate * ak) / al;
+    const FloatType xi = envs.ibase ? xi_before_rotate : xj_before_rotate;
+    const FloatType yi = envs.ibase ? yi_before_rotate : yj_before_rotate;
+    const FloatType zi = envs.ibase ? zi_before_rotate : zj_before_rotate;
+    const FloatType xj = envs.ibase ? xj_before_rotate : xi_before_rotate;
+    const FloatType yj = envs.ibase ? yj_before_rotate : yi_before_rotate;
+    const FloatType zj = envs.ibase ? zj_before_rotate : zi_before_rotate;
+    const FloatType xk = envs.kbase ? xk_before_rotate : xl_before_rotate;
+    const FloatType yk = envs.kbase ? yk_before_rotate : yl_before_rotate;
+    const FloatType zk = envs.kbase ? zk_before_rotate : zl_before_rotate;
+    const FloatType xl = envs.kbase ? xl_before_rotate : xk_before_rotate;
+    const FloatType yl = envs.kbase ? yl_before_rotate : yk_before_rotate;
+    const FloatType zl = envs.kbase ? zl_before_rotate : zk_before_rotate;
     const FloatType xijxi = xij - xi;
     const FloatType yijyi = yij - yi;
     const FloatType zijzi = zij - zi;
@@ -670,9 +693,9 @@ static void GINTg0_2e_2d4d(GINTEnvVars envs, FloatType* __restrict__ g, FloatTyp
 
     if (ijmin > 0) {
         // g(i,j) = rirj * g(i,j-1) +  g(i+1,j-1)
-        const FloatType xixj = xi - bas_x[jsh];
-        const FloatType yiyj = yi - bas_y[jsh];
-        const FloatType zizj = zi - bas_z[jsh];
+        const FloatType xixj = xi - xj;
+        const FloatType yiyj = yi - yj;
+        const FloatType zizj = zi - zj;
         //for (k = 0; k <= mmax; ++k) {
         //for (j = 0; j < ijmin; ++j) {
         //for (i = nmax-1-j; i >= 0; i--) {
@@ -750,9 +773,9 @@ static void GINTg0_2e_2d4d(GINTEnvVars envs, FloatType* __restrict__ g, FloatTyp
 
     if (klmin > 0) {
         // g(...,k,l) = rkrl * g(...,k,l-1) + g(...,k+1,l-1)
-        const FloatType xkxl = xk - bas_x[lsh];
-        const FloatType ykyl = yk - bas_y[lsh];
-        const FloatType zkzl = zk - bas_z[lsh];
+        const FloatType xkxl = xk - xl;
+        const FloatType ykyl = yk - yl;
+        const FloatType zkzl = zk - zl;
         //for (l = 0; l < klmin; ++l) {
         //for (k = mmax-1-l; k >= 0; k--) {
         //    off = l*dl + k*dk;

@@ -167,7 +167,7 @@ def get_jk(mol, dm, hermi=1, vhfopt=None, with_j=True, with_k=True, omega=None,
             else:
                 log_single_double_precision_threshold = log_cutoff
 
-            err = fn(vhfopt.bpcache, vhfopt.bpcache_single,
+            err = fn(vhfopt.bpcache, vhfopt.bpcache_single, vhfopt.bpcache_double,
                      vj_ptr, vk_ptr,
                      ctypes.cast(dms.data.ptr, ctypes.c_void_p),
                      vj_single_precision_ptr, vk_single_precision_ptr,
@@ -883,13 +883,14 @@ class _VHFOpt:
         ncptype = len(log_qs)
         self.bpcache = ctypes.POINTER(BasisProdCache)()
         self.bpcache_single = ctypes.POINTER(BasisProdCacheSinglePrecision)()
+        self.bpcache_double = ctypes.POINTER(BasisProdCacheDoublePrecision)()
         if diag_block_with_triu:
             scale_shellpair_diag = 1.
         else:
             scale_shellpair_diag = 0.5
         libgvhf.GINTinit_basis_prod_mixed_precision(
             ctypes.byref(self.bpcache),
-            ctypes.byref(self.bpcache_single),
+            ctypes.byref(self.bpcache_single), ctypes.byref(self.bpcache_double),
             ctypes.c_double(scale_shellpair_diag),
             ao_loc.ctypes.data_as(ctypes.c_void_p),
             self.bas_pair2shls.ctypes.data_as(ctypes.c_void_p),
@@ -906,7 +907,7 @@ class _VHFOpt:
 
     def clear(self):
         _vhf.VHFOpt.__del__(self)
-        libgvhf.GINTdel_basis_prod_mixed_precision(ctypes.byref(self.bpcache), ctypes.byref(self.bpcache_single))
+        libgvhf.GINTdel_basis_prod_mixed_precision(ctypes.byref(self.bpcache), ctypes.byref(self.bpcache_single), ctypes.byref(self.bpcache_double))
         return self
 
     def __del__(self):
@@ -919,6 +920,9 @@ class BasisProdCache(ctypes.Structure):
     pass
 
 class BasisProdCacheSinglePrecision(ctypes.Structure):
+    pass
+
+class BasisProdCacheDoublePrecision(ctypes.Structure):
     pass
 
 def basis_seg_contraction(mol, allow_replica=False):

@@ -273,28 +273,36 @@ typedef struct {
     double *a2;
 } BasisProdCache;
 
+struct BasisProductCacheSinglePrecision {
+    float *d_a12; // n_primitive_pairs
+    float *d_e12; // n_primitive_pairs
+    float *d_x12; // n_primitive_pairs
+    float *d_y12; // n_primitive_pairs
+    float *d_z12; // n_primitive_pairs
+    float *d_a1;  // n_primitive_pairs
+    float *d_x1; // n_bas_pairs
+    float *d_y1; // n_bas_pairs
+    float *d_z1; // n_bas_pairs
+    int *d_i0; // n_bas_pairs
+    int *d_i1; // n_bas_pairs
+    int *d_j0; // n_bas_pairs
+    int *d_j1; // n_bas_pairs
+};
 
-struct BasisProdCacheSinglePrecision {
-    int nbas;  // len(bas_coords)
-    int ncptype;  // len(cptype)
-    ContractionProdType *cptype;
-    int *bas_pairs_locs;  // len(bas_pair2bra) = sum(cptype[:].nparis)
-    int *primitive_pairs_locs;  // len(a12) = sum(cptype[:].nparis*cptype[:].nprim_12)
-    int *bas_pair2shls;
-    float *aexyz;
-
-    // Data below held on GPU global memory
-    float *bas_coords;  // basis coordinates
-    int *bas_pair2bra;
-    int *bas_pair2ket;
-    int *ao_loc;
-    float *a12;
-    float *e12;
-    float *x12;
-    float *y12;
-    float *z12;
-    float *a1;
-    float *a2;
+struct BasisProductCacheDoublePrecision {
+    double *d_a12; // n_primitive_pairs
+    double *d_e12; // n_primitive_pairs
+    double *d_x12; // n_primitive_pairs
+    double *d_y12; // n_primitive_pairs
+    double *d_z12; // n_primitive_pairs
+    double *d_a1;  // n_primitive_pairs
+    double *d_x1; // n_bas_pairs
+    double *d_y1; // n_bas_pairs
+    double *d_z1; // n_bas_pairs
+    int *d_i0; // n_bas_pairs
+    int *d_i1; // n_bas_pairs
+    int *d_j0; // n_bas_pairs
+    int *d_j1; // n_bas_pairs
 };
 
 typedef struct {

@@ -68,7 +68,7 @@ static int GINTrun_tasks_jk(JKMatrix *jk, JKMatrixMixedPrecision<FloatType> *jk_
         case (2<<6)|(1<<4)|(0<<2)|0: GINTint2e_jk_kernel2100<<<blocks, threads, 0>>>(*envs, *jk, *offsets); break;
         case (3<<6)|(0<<4)|(0<<2)|0: GINTint2e_jk_kernel3000<<<blocks, threads, 0>>>(*envs, *jk, *offsets); break;
         default:
-            GINTint2e_jk_kernel<2, GSIZE2, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
+            GINTint2e_jk_kernel_general<2, GSIZE2, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
         }
         break;
     case 3:
@@ -90,21 +90,21 @@ static int GINTrun_tasks_jk(JKMatrix *jk, JKMatrixMixedPrecision<FloatType> *jk_
         case (3<<6)|(1<<4)|(1<<2)|0: GINTint2e_jk_kernel3110<<<blocks, threads, 0>>>(*envs, *jk, *offsets); break;
         case (3<<6)|(2<<4)|(0<<2)|0: GINTint2e_jk_kernel3200<<<blocks, threads, 0>>>(*envs, *jk, *offsets); break;
         default:
-            GINTint2e_jk_kernel<3, GSIZE3, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
+            GINTint2e_jk_kernel_general<3, GSIZE3, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
         }
         break;
     case 4:
-        GINTint2e_jk_kernel<4, GSIZE4, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
+        GINTint2e_jk_kernel_general<4, GSIZE4, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
     case 5:
-        GINTint2e_jk_kernel<5, GSIZE5, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
+        GINTint2e_jk_kernel_general<5, GSIZE5, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
     case 6:
-        GINTint2e_jk_kernel<6, GSIZE6, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
+        GINTint2e_jk_kernel_general<6, GSIZE6, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
     case 7:
-        GINTint2e_jk_kernel<7, GSIZE7, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
+        GINTint2e_jk_kernel_general<7, GSIZE7, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
     case 8:
-        GINTint2e_jk_kernel<8, GSIZE8, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
+        GINTint2e_jk_kernel_general<8, GSIZE8, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
     case 9:
-        GINTint2e_jk_kernel<9, GSIZE9, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
+        GINTint2e_jk_kernel_general<9, GSIZE9, FloatType> <<<blocks, threads, 0>>>(*envs, *jk_test, *offsets); break;
     default:
         fprintf(stderr, "rys roots %d\n", nrys_roots);
         return 1;
@@ -119,22 +119,22 @@ static int GINTrun_tasks_jk(JKMatrix *jk, JKMatrixMixedPrecision<FloatType> *jk_
 }
 
 extern "C" { __host__
-int GINTbuild_jk(BasisProdCache *bpcache,
-                 BasisProdCacheSinglePrecision *bpcache_single,
-                 double *vj, double *vk, double *dm,
-                 float *vj_single_precision, float *vk_single_precision, float *dm_single_precision,
-                 int nao, int n_dm,
-                 int *bins_locs_ij, int *bins_locs_kl,
-                 double *bins_floor_ij, double *bins_floor_kl,
-                 int nbins_ij, int nbins_kl,
-                 int cp_ij_id, int cp_kl_id, // pair type id
-                 double omega,
-                 double log_cutoff, // overall cutoff
-                 double log_single_double_precision_threshold,
-                 double sub_dm_cond, // max element of density matrix
-                 double *dm_sh, // unused
-                 int nshls, // unused
-                 double *log_q_ij, double *log_q_kl // Schwarz upperbound
+int GINTbuild_jk(const BasisProdCache *bpcache,
+                 const BasisProductCacheSinglePrecision *bpcache_single, const BasisProductCacheDoublePrecision *bpcache_double,
+                 double *vj, double *vk, double *dm, // miss a const here
+                 float *vj_single_precision, float *vk_single_precision, const float *dm_single_precision,
+                 const int nao, const int n_dm,
+                 const int *bins_locs_ij, const int *bins_locs_kl,
+                 const double *bins_floor_ij, const double *bins_floor_kl,
+                 const int nbins_ij, const int nbins_kl,
+                 const int cp_ij_id, const int cp_kl_id, // pair type id
+                 const double omega,
+                 const double log_cutoff, // overall cutoff
+                 const double log_single_double_precision_threshold,
+                 const double sub_dm_cond, // max element of density matrix
+                 double *dm_sh, // unused, miss a const here
+                 const int nshls, // unused
+                 const double *log_q_ij, const double *log_q_kl // Schwarz upperbound
                  )
 {
     ContractionProdType *cp_ij = bpcache->cptype + cp_ij_id;
@@ -180,7 +180,8 @@ int GINTbuild_jk(BasisProdCache *bpcache,
     //checkCudaErrors(cudaMemcpyToSymbol(c_envs, &envs, sizeof(GINTEnvVars)));
     // move bpcache to constant memory
     checkCudaErrors(cudaMemcpyToSymbol(c_bpcache, bpcache, sizeof(BasisProdCache)));
-    checkCudaErrors(cudaMemcpyToSymbol(c_bpcache_single, bpcache_single, sizeof(BasisProdCacheSinglePrecision)));
+    checkCudaErrors(cudaMemcpyToSymbol(c_bpcache_single, bpcache_single, sizeof(BasisProductCacheSinglePrecision)));
+    checkCudaErrors(cudaMemcpyToSymbol(c_bpcache_double, bpcache_double, sizeof(BasisProductCacheDoublePrecision)));
 
     JKMatrix jk; // Should be replaced by JKMatrixMixedPrecision in later code
     jk.n_dm = n_dm;

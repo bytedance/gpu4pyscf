@@ -68,7 +68,7 @@ void GINTdel_basis_prod(BasisProdCache **pbp)
 }
 
 __host__
-void GINTdel_basis_prod_single_precision(BasisProdCache **pbp, BasisProdCacheSinglePrecision **pbp_single)
+void GINTdel_basis_prod_single_precision(BasisProdCache **pbp, BasisProductCacheSinglePrecision **pbp_single, BasisProductCacheDoublePrecision **pbp_double)
 {
     BasisProdCache *bpcache = *pbp;
     if (bpcache == NULL) {
@@ -94,15 +94,20 @@ void GINTdel_basis_prod_single_precision(BasisProdCache **pbp, BasisProdCacheSin
     free(bpcache);
     *pbp = NULL;
 
-    BasisProdCacheSinglePrecision *bpcache_single = *pbp_single;
-    if (bpcache_single->aexyz != NULL) {
-        free(bpcache_single->aexyz);
+    BasisProductCacheDoublePrecision *bpcache_double = *pbp_double;
+    if (bpcache_double->d_a12 != NULL) {
+        FREE(bpcache_double->d_a12);
     }
-    if (bpcache_single->a12 != NULL) {
-        FREE(bpcache_single->bas_coords);
-        FREE(bpcache_single->a12);
+    if (bpcache_double->d_i0 != NULL) {
+        FREE(bpcache_double->d_i0);
     }
+    free(bpcache_double);
+    *pbp_double = NULL;
 
+    BasisProductCacheSinglePrecision *bpcache_single = *pbp_single;
+    if (bpcache_single->d_a12 != NULL) {
+        FREE(bpcache_single->d_a12);
+    }
     free(bpcache_single);
     *pbp_single = NULL;
 }
@@ -150,13 +155,15 @@ void GINTinit_basis_prod(BasisProdCache **pbp, double diag_fac, int *ao_loc,
     bpcache->bas_pair2ket = d_bas_pair2shls + n_bas_pairs;
 }
 
-void GINTinit_basis_prod_mixed_precision(BasisProdCache **pbp_double, BasisProdCacheSinglePrecision **pbp_single, double diag_fac, int *ao_loc,
+void GINTinit_basis_prod_mixed_precision(BasisProdCache **pbp,
+                                         BasisProductCacheSinglePrecision **pbp_single, BasisProductCacheDoublePrecision **pbp_double,
+                                         double diag_fac, int *ao_loc,
                                          int *bas_pair2shls, int *bas_pairs_locs, int ncptype,
                                          int *atm, int natm, int *bas, int nbas, double *env)
 {
     BasisProdCache *bpcache = (BasisProdCache *)malloc(sizeof(BasisProdCache));
     memset(bpcache, 0, sizeof(BasisProdCache));
-    *pbp_double = bpcache;
+    *pbp = bpcache;
 
     GINTinit_contraction_types(bpcache, bas_pair2shls, bas_pairs_locs, ncptype,
                                atm, natm, bas, nbas, env);
@@ -177,6 +184,7 @@ void GINTinit_basis_prod_mixed_precision(BasisProdCache **pbp_double, BasisProdC
     GINTsort_bas_coordinates(bas_coords, atm, natm, bas, nbas, env);
     DEVICE_INIT(double, d_bas_coords, bas_coords, nbas * 3);
     bpcache->bas_coords = d_bas_coords;
+    free(bas_coords);
 
     // initialize pair data on GPU memory
     DEVICE_INIT(double, d_aexyz, aexyz, n_primitive_pairs * 7);
@@ -191,53 +199,54 @@ void GINTinit_basis_prod_mixed_precision(BasisProdCache **pbp_double, BasisProdC
     bpcache->bas_pair2bra = d_bas_pair2shls;
     bpcache->bas_pair2ket = d_bas_pair2shls + n_bas_pairs;
 
-    BasisProdCacheSinglePrecision *bpcache_single = (BasisProdCacheSinglePrecision *)malloc(sizeof(BasisProdCacheSinglePrecision));
-    memset(bpcache_single, 0, sizeof(BasisProdCacheSinglePrecision));
+    BasisProductCacheSinglePrecision *bpcache_single = (BasisProductCacheSinglePrecision *)malloc(sizeof(BasisProductCacheSinglePrecision));
+    memset(bpcache_single, 0, sizeof(BasisProductCacheSinglePrecision));
     *pbp_single = bpcache_single;
 
-    bpcache_single->nbas = bpcache->nbas;
-    bpcache_single->ncptype = bpcache->ncptype;
-    bpcache_single->cptype = bpcache->cptype; // This is pointer shallow copy!
-    bpcache_single->bas_pairs_locs = bpcache->bas_pairs_locs; // This is pointer shallow copy!
-    bpcache_single->primitive_pairs_locs = bpcache->primitive_pairs_locs; // This is pointer shallow copy!
-    bpcache_single->bas_pair2shls = bpcache->bas_pair2shls; // This is pointer shallow copy!
+    BasisProductCacheDoublePrecision *bpcache_double = (BasisProductCacheDoublePrecision *)malloc(sizeof(BasisProductCacheDoublePrecision));
+    memset(bpcache_double, 0, sizeof(BasisProductCacheDoublePrecision));
+    *pbp_double = bpcache_double;
 
-    float *aexyz_single = (float *)malloc(sizeof(float) * n_primitive_pairs * 7);
-    for (int i = 0; i < n_primitive_pairs * 7; i++)
-        aexyz_single[i] = static_cast<float>(aexyz[i]);
-    // for (int i = 0; i < n_primitive_pairs * 7; i++)
-    //     if (isnan(aexyz_single[i])) {
-    //         printf("i = %d is nan, aexyz[i] = %.10f\n", aexyz[i]);
-    //         exit(1);
-    //     }
-    bpcache_single->aexyz = aexyz_single;
+    double *h_aexyz_double = (double *)malloc((n_primitive_pairs * 6 + n_bas_pairs * 3) * sizeof(double));
+    int *h_i0i1j0j1 = (int *)malloc(n_primitive_pairs * 4 * sizeof(int));
+    GINTinit_populate_pair_data(h_aexyz_double, h_i0i1j0j1, bpcache, diag_fac, atm, natm, bas, nbas, ao_loc, env);
+    DEVICE_INIT(double, d_aexyz_double, h_aexyz_double, n_primitive_pairs * 6 + n_bas_pairs * 3);
+    DEVICE_INIT(int, d_i0i1j0j1, h_i0i1j0j1, n_primitive_pairs * 4);
+    bpcache_double->d_a12 = d_aexyz_double;
+    bpcache_double->d_e12 = d_aexyz_double + n_primitive_pairs * 1;
+    bpcache_double->d_x12 = d_aexyz_double + n_primitive_pairs * 2;
+    bpcache_double->d_y12 = d_aexyz_double + n_primitive_pairs * 3;
+    bpcache_double->d_z12 = d_aexyz_double + n_primitive_pairs * 4;
+    bpcache_double->d_a1  = d_aexyz_double + n_primitive_pairs * 5;
+    bpcache_double->d_x1  = d_aexyz_double + n_primitive_pairs * 6;
+    bpcache_double->d_y1  = d_aexyz_double + n_primitive_pairs * 6 + n_bas_pairs;
+    bpcache_double->d_z1  = d_aexyz_double + n_primitive_pairs * 6 + n_bas_pairs * 2;
+    bpcache_double->d_i0  = d_i0i1j0j1;
+    bpcache_double->d_i1  = d_i0i1j0j1 + n_bas_pairs * 1;
+    bpcache_double->d_j0  = d_i0i1j0j1 + n_bas_pairs * 2;
+    bpcache_double->d_j1  = d_i0i1j0j1 + n_bas_pairs * 3;
 
-    bpcache_single->bas_pair2bra = bpcache->bas_pair2bra; // This is device pointer shallow copy!
-    bpcache_single->bas_pair2ket = bpcache->bas_pair2ket; // This is device pointer shallow copy!
-    bpcache_single->ao_loc = bpcache->ao_loc; // This is device pointer shallow copy!
+    float *h_aexyz_single = (float *)malloc((n_primitive_pairs * 6 + n_bas_pairs * 3) * sizeof(float));
+    for (int i = 0; i < n_primitive_pairs * 6 + n_bas_pairs * 3; i++)
+        h_aexyz_single[i] = static_cast<float>(h_aexyz_double[i]);
+    DEVICE_INIT(float, d_aexyz_single, h_aexyz_single, n_primitive_pairs * 6 + n_bas_pairs * 3);
+    bpcache_single->d_a12 = d_aexyz_single;
+    bpcache_single->d_e12 = d_aexyz_single + n_primitive_pairs * 1;
+    bpcache_single->d_x12 = d_aexyz_single + n_primitive_pairs * 2;
+    bpcache_single->d_y12 = d_aexyz_single + n_primitive_pairs * 3;
+    bpcache_single->d_z12 = d_aexyz_single + n_primitive_pairs * 4;
+    bpcache_single->d_a1  = d_aexyz_single + n_primitive_pairs * 5;
+    bpcache_single->d_x1  = d_aexyz_single + n_primitive_pairs * 6;
+    bpcache_single->d_y1  = d_aexyz_single + n_primitive_pairs * 6 + n_bas_pairs;
+    bpcache_single->d_z1  = d_aexyz_single + n_primitive_pairs * 6 + n_bas_pairs * 2;
+    bpcache_single->d_i0  = d_i0i1j0j1;
+    bpcache_single->d_i1  = d_i0i1j0j1 + n_bas_pairs * 1;
+    bpcache_single->d_j0  = d_i0i1j0j1 + n_bas_pairs * 2;
+    bpcache_single->d_j1  = d_i0i1j0j1 + n_bas_pairs * 3;
 
-    float *bas_coords_single = (float *)malloc(sizeof(float) * nbas * 3);
-    for (int i = 0; i < nbas * 3; i++)
-        bas_coords_single[i] = static_cast<float>(bas_coords[i]);
-    // for (int i = 0; i < nbas * 3; i++)
-    //     if (isnan(bas_coords_single[i])) {
-    //         printf("i = %d is nan, bas_coords[i] = %.10f\n", bas_coords[i]);
-    //         exit(1);
-    //     }
-    DEVICE_INIT(float, d_bas_coords_single, bas_coords_single, nbas * 3);
-    bpcache_single->bas_coords = d_bas_coords_single;
-
-    DEVICE_INIT(float, d_aexyz_single, aexyz_single, n_primitive_pairs * 7);
-    bpcache_single->a12 = d_aexyz_single;
-    bpcache_single->e12 = d_aexyz_single + n_primitive_pairs * 1;
-    bpcache_single->x12 = d_aexyz_single + n_primitive_pairs * 2;
-    bpcache_single->y12 = d_aexyz_single + n_primitive_pairs * 3;
-    bpcache_single->z12 = d_aexyz_single + n_primitive_pairs * 4;
-    bpcache_single->a1  = d_aexyz_single + n_primitive_pairs * 5;
-    bpcache_single->a2  = d_aexyz_single + n_primitive_pairs * 6;
-
-    free(bas_coords);
-    free(bas_coords_single);
+    free(h_aexyz_double);
+    free(h_aexyz_single);
+    free(h_i0i1j0j1);
 }
 }
 

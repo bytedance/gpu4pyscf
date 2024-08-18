@@ -29,12 +29,12 @@
 
 template <int NROOTS, int GSIZE, typename FloatType>
 __global__
-void GINTint2e_jk_kernel(GINTEnvVars envs,
-                         JKMatrixMixedPrecision<FloatType> jk,
-                         BasisProdOffsets offsets)
+void GINTint2e_jk_kernel_general(const GINTEnvVars envs,
+                                 JKMatrixMixedPrecision<FloatType> jk,
+                                 const BasisProdOffsets offsets)
 {
-    int ntasks_ij = offsets.ntasks_ij;
-    int ntasks_kl = offsets.ntasks_kl;
+    const int ntasks_ij = offsets.ntasks_ij;
+    const int ntasks_kl = offsets.ntasks_kl;
     int task_ij = blockIdx.x * blockDim.x + threadIdx.x;
     int task_kl = blockIdx.y * blockDim.y + threadIdx.y;
     bool active = true;
@@ -43,8 +43,8 @@ void GINTint2e_jk_kernel(GINTEnvVars envs,
         active = false;
     }
 
-    int bas_ij = offsets.bas_ij + task_ij;
-    int bas_kl = offsets.bas_kl + task_kl;
+    const int bas_ij = offsets.bas_ij + task_ij;
+    const int bas_kl = offsets.bas_kl + task_kl;
     if (bas_ij < bas_kl) {
         active = false;
     }
@@ -53,40 +53,18 @@ void GINTint2e_jk_kernel(GINTEnvVars envs,
         norm *= static_cast<FloatType>(0.5);
     }
 
-    int nprim_ij = envs.nprim_ij;
-    int nprim_kl = envs.nprim_kl;
-    int prim_ij = offsets.primitive_ij + task_ij * nprim_ij;
-    int prim_kl = offsets.primitive_kl + task_kl * nprim_kl;
-    int *bas_pair2bra = c_bpcache.bas_pair2bra;
-    int *bas_pair2ket = c_bpcache.bas_pair2ket;
-    int ish = bas_pair2bra[bas_ij];
-    int jsh = bas_pair2ket[bas_ij];
-    int ksh = bas_pair2bra[bas_kl];
-    int lsh = bas_pair2ket[bas_kl];
+    const int nprim_ij = envs.nprim_ij;
+    const int nprim_kl = envs.nprim_kl;
+    const int prim_ij = offsets.primitive_ij + task_ij * nprim_ij;
+    const int prim_kl = offsets.primitive_kl + task_kl * nprim_kl;
 
     FloatType g[GSIZE];
 
-    int ij, kl;
-    int as_ish, as_jsh, as_ksh, as_lsh;
-    if (envs.ibase) {
-        as_ish = ish;
-        as_jsh = jsh;
-    } else {
-        as_ish = jsh;
-        as_jsh = ish;
-    }
-    if (envs.kbase) {
-        as_ksh = ksh;
-        as_lsh = lsh;
-    } else {
-        as_ksh = lsh;
-        as_lsh = ksh;
-    }
     if (!active) norm = static_cast<FloatType>(0.0);
-    for (ij = prim_ij; ij < prim_ij+nprim_ij; ++ij) {
-    for (kl = prim_kl; kl < prim_kl+nprim_kl; ++kl) {
-        if (active) GINTg0_2e_2d4d<NROOTS, FloatType>(envs, g, norm, as_ish, as_jsh, as_ksh, as_lsh, ij, kl);
-        if (active) GINTkernel_direct_getjk<NROOTS, GSIZE, FloatType>(envs, jk, g, ish, jsh, ksh, lsh);
+    for (int ij = prim_ij; ij < prim_ij+nprim_ij; ++ij) {
+    for (int kl = prim_kl; kl < prim_kl+nprim_kl; ++kl) {
+        if (active) GINTg0_2e_2d4d<NROOTS, FloatType>(envs, g, norm, ij, kl, bas_ij, bas_kl);
+        if (active) GINTkernel_direct_getjk<NROOTS, GSIZE, FloatType>(envs, jk, g, bas_ij, bas_kl);
     } }
 }
 

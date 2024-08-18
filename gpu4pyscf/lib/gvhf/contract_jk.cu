@@ -225,20 +225,19 @@ static void GINTkernel_direct_getjk(GINTEnvVars envs, JKMatrix jk, double* __res
 
 template <int NROOTS, int GSIZE, typename FloatType>
 __device__
-static void GINTkernel_direct_getjk(GINTEnvVars envs,
+static void GINTkernel_direct_getjk(const GINTEnvVars envs,
                                     JKMatrixMixedPrecision<FloatType> jk,
-                                    FloatType* __restrict__ g,
-                                    int ish, int jsh, int ksh, int lsh)
+                                    const FloatType* __restrict__ g,
+                                    const int bas_ij, const int bas_kl)
 {
-    const int *ao_loc = c_bpcache.ao_loc;
-    const int i0 = ao_loc[ish  ];
-    const int i1 = ao_loc[ish+1];
-    const int j0 = ao_loc[jsh  ];
-    const int j1 = ao_loc[jsh+1];
-    const int k0 = ao_loc[ksh  ];
-    const int k1 = ao_loc[ksh+1];
-    const int l0 = ao_loc[lsh  ];
-    const int l1 = ao_loc[lsh+1];
+    const int i0 = BasisProdCacheGetter<FloatType>::get().d_i0[bas_ij];
+    const int i1 = BasisProdCacheGetter<FloatType>::get().d_i1[bas_ij];
+    const int j0 = BasisProdCacheGetter<FloatType>::get().d_j0[bas_ij];
+    const int j1 = BasisProdCacheGetter<FloatType>::get().d_j1[bas_ij];
+    const int k0 = BasisProdCacheGetter<FloatType>::get().d_i0[bas_kl];
+    const int k1 = BasisProdCacheGetter<FloatType>::get().d_i1[bas_kl];
+    const int l0 = BasisProdCacheGetter<FloatType>::get().d_j0[bas_kl];
+    const int l1 = BasisProdCacheGetter<FloatType>::get().d_j1[bas_kl];
     const int nfi = i1 - i0;
     const int nfj = j1 - j0;
     const int nfij = nfi * nfj;
