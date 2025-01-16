@@ -19,6 +19,8 @@ from pyscf import gto
 from pyscf import lib
 from pyscf.lib import logger
 from gpu4pyscf.grad import rhf as rhf_grad
+from gpu4pyscf.df import int3c2e      #TODO: move int3c2e to out of df
+from gpu4pyscf.lib.cupy_helper import tag_array, contract, condense, sandwich_dot, reduce_to_device
 from gpu4pyscf.scf import cphf
 from gpu4pyscf import lib as lib_gpu
 from pyscf import __config__
@@ -45,7 +47,7 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
     mo_energy = cp.asarray(mf.mo_energy)
     mo_occ = cp.asarray(mf.mo_occ)
     nao, nmo = mo_coeff.shape
-    nocc = (mo_occ>0).sum()
+    nocc = int((mo_occ>0).sum())
     nvir = nmo - nocc
     x, y = x_y
     x = cp.asarray(x)
@@ -62,6 +64,8 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
     dmzoo+= reduce(cp.dot, (orbv, dvv, orbv.T)) # T_{ij}*2 + T_{ab}*2 in ao basis
 
     vj, vk = mf.get_jk(mol, (dmzoo, dmxpy+dmxpy.T, dmxmy-dmxmy.T), hermi=0)
+    if not isinstance(vj, cp.ndarray): vj = cp.asarray(vj)
+    if not isinstance(vk, cp.ndarray): vk = cp.asarray(vk)
     veff0doo = vj[0] * 2 - vk[0] # 2 for alpha and beta
     wvo = reduce(cp.dot, (orbv.T, veff0doo, orbo)) * 2
     if singlet:
@@ -103,7 +107,7 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
     im0[nocc:,:nocc] = cp.einsum('ki,ai->ak', veff0mop[:nocc,:nocc], xpy)*2 #  sum_{i} (X+Y)_{ki}H_{ai}^+[(X+Y)] * 2
     im0[nocc:,:nocc]+= cp.einsum('ki,ai->ak', veff0mom[:nocc,:nocc], xmy)*2 #  sum_{i} (X+Y)_{ki}H_{ai}^+[(X+Y)] + sum_{i} (X-Y)_{ki}H_{ai}^-[(X-Y)] * 2
 
-    zeta = lib_gpu.direct_sum('i+j->ij', mo_energy, mo_energy) * .5 
+    zeta = lib_gpu.cupy_helper.direct_sum('i+j->ij', mo_energy, mo_energy) * .5 
     zeta[nocc:,:nocc] = mo_energy[:nocc] 
     zeta[:nocc,nocc:] = mo_energy[nocc:] 
     dm1 = cp.zeros((nmo,nmo))
@@ -136,6 +140,28 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
         atmlst = range(mol.natm)
     offsetdic = mol.offset_nr_by_atom()
     de = cp.zeros((len(atmlst),3))
+    h1 = cp.asarray(mf_grad.get_hcore(mol)) # without 1/r like terms
+    s1 = cp.asarray(mf_grad.get_ovlp(mol))
+    dh_ground = contract('xij,ij->xi', h1, oo0*2)
+    dh_td = contract('xij,ij->xi', h1, dmz1doo)
+    ds = contract('xij,ij->xi', s1, im0)
+    dvhf_oo0 = mf_grad.get_veff(mol, oo0*2)*2
+    dvhf_oo0 = mf_grad.get_veff(mol, oo0*2)*2
+
+    dh1e_ground = int3c2e.get_dh1e(mol, oo0*2) # 1/r like terms
+    if mol.has_ecp():
+        dh1e_ground += rhf_grad.get_dh1e_ecp(mol, oo0*2) # 1/r like terms
+    dh1e_td = int3c2e.get_dh1e(mol, dmz1doo) # 1/r like terms
+    if mol.has_ecp():
+        dh1e_td += rhf_grad.get_dh1e_ecp(mol, dmz1doo) # 1/r like terms
+
+    dvhf_DD = mf_grad.get_veff(mol, oo0)
+    dvhf_PD = mf_grad.get_veff(mol, dmz1doo+dmz1doo.T)
+    extra_force = cupy.zeros((len(atmlst),3))
+    for k, ia in enumerate(atmlst):
+        extra_force[k] += mf_grad.extra_force(ia, locals())
+    
+
     for k, ia in enumerate(atmlst):
         shl0, shl1, p0, p1 = offsetdic[ia]
 

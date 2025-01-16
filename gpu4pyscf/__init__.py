@@ -14,4 +14,4 @@
 
 __version__ = '1.2.1'
 
-from . import lib, grad, hessian, solvent, scf, dft
+from . import lib, grad, hessian, solvent, scf, dft, tdscf

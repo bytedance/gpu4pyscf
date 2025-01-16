@@ -384,6 +384,7 @@ class GradientsBase(lib.StreamObject):
     _write      = rhf_grad_cpu.GradientsBase._write
     as_scanner  = as_scanner
     _tag_rdm1   = rhf_grad_cpu.GradientsBase._tag_rdm1
+    hcore_generator = hcore_generator
 
 
 class Gradients(GradientsBase):
