@@ -15,6 +15,7 @@
 
 from functools import reduce
 import cupy as cp
+import numpy as np
 from pyscf import gto
 from pyscf import lib
 from pyscf.lib import logger
@@ -24,7 +25,22 @@ from gpu4pyscf.lib.cupy_helper import tag_array, contract, condense, sandwich_do
 from gpu4pyscf.scf import cphf
 from gpu4pyscf import lib as lib_gpu
 from pyscf import __config__
+from pyscf.scf import _vhf
 
+
+def get_jk(mol, dm):
+    '''J = ((-nabla i) j| kl) D_lk
+    K = ((-nabla i) j| kl) D_jk
+    '''
+    if not isinstance(dm, np.ndarray): dm = dm.get()
+    # vhfopt = _VHFOpt(mol, 'int2e_ip1').build()
+    intor = mol._add_suffix('int2e_ip1')
+    vj, vk = _vhf.direct_mapdm(intor,  # (nabla i,j|k,l)
+                               's2kl', # ip1_sph has k>=l,
+                               ('lk->s1ij', 'jk->s1il'),
+                               dm, 3, # xyz, 3 components
+                               mol._atm, mol._bas, mol._env)
+    return -vj, -vk
 
 def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
               max_memory=2000, verbose=logger.INFO):
@@ -120,21 +136,10 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
     # Initialize hcore_deriv with the underlying SCF object because some
     # extensions (e.g. QM/MM, solvent) modifies the SCF object only.
     mf_grad = td_grad.base._scf.nuc_grad_method()
-    # hcore_deriv = mf_grad.hcore_generator(mol)
     s1 = mf_grad.get_ovlp(mol)
 
     dmz1doo = z1ao + dmzoo # P
     oo0 = reduce(cp.dot, (orbo, orbo.T)) #D
-    # vj, vk = td_grad.get_jk(mol, (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T,
-    #                               dmxmy-dmxmy.T)) #D, P, (X+Y), (X-Y)
-    # vj = vj.reshape(-1,3,nao,nao)
-    # vk = vk.reshape(-1,3,nao,nao)
-    # vhf1 = -vk
-    # if singlet:
-    #     vhf1 += vj * 2
-    # else:
-    #     vhf1[:2] += vj[:2]*2
-    # time1 = log.timer('2e AO integral derivatives', *time1)
 
     if atmlst is None:
         atmlst = range(mol.natm)
@@ -157,14 +162,16 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
     dvhf_DD_DP -= mf_grad.get_veff(mol, (dmz1doo+dmz1doo.T)*0.5)
     dvhf_xpy = mf_grad.get_veff(mol, dmxpy+dmxpy.T)*2
     dvhf_xmy = mf_grad.get_veff(mol, dmxmy-dmxmy.T)*2
-    dvhf_xmy+= mf_grad.get_veff(mol, dmxmy.T)*2
-    dvhf_xmy-= mf_grad.get_veff(mol, dmxmy)*2
-    dvhf_xmy1 = dvhf_xmy/2
-    dvhf_xmy = mf_grad.get_veff(mol, dmxmy-dmxmy.T)*2
-    dvhf_xmy+= mf_grad.get_veff(mol, dmxmy)*2
-    dvhf_xmy-= mf_grad.get_veff(mol, dmxmy.T)*2
-    dvhf_xmy2 = dvhf_xmy/2
-
+    vj, vk = get_jk(mol, (dmxmy-dmxmy.T)) #D, P, (X+Y), (X-Y)
+    if not isinstance(vj, cp.ndarray): vj = cp.asarray(vj)
+    if not isinstance(vk, cp.ndarray): vk = cp.asarray(vk)
+    vj = vj.reshape(3,nao,nao)
+    vk = vk.reshape(3,nao,nao)
+    vhf1 = -vk
+    if singlet:
+        vhf1 += vj * 2
+    else:
+        vhf1 += vj*2
     extra_force = cp.zeros((len(atmlst),3))
     for k, ia in enumerate(atmlst):
         extra_force[k] += mf_grad.extra_force(ia, locals())
@@ -172,30 +179,14 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
     delec = 2.0*(dh_ground + dh_td - ds)
     aoslices = mol.aoslice_by_atom()
     delec= cp.asarray([cp.sum(delec[:, p0:p1], axis=1) for p0, p1 in aoslices[:,2:]])
-    de = 2.0 * (dvhf_DD_DP + dvhf_xpy - dvhf_xmy1 + dvhf_xmy2) + dh1e_ground + dh1e_td + delec + extra_force
-    # de = 2.0*dvhf_DD_DP + dh1e_ground + dh1e_td + delec + extra_force
-
-    # for k, ia in enumerate(atmlst):
-    #     shl0, shl1, p0, p1 = offsetdic[ia]
-
-    #     # Ground state gradients
-    #     h1ao = hcore_deriv(ia)
-    #     h1ao[:,p0:p1]   += vhf1[0,:,p0:p1]
-    #     h1ao[:,:,p0:p1] += vhf1[0,:,p0:p1].transpose(0,2,1)
-    #     # doublel occupancy
-    #     de[k] = cp.einsum('xpq,pq->x', h1ao, oo0) * 2 # ground state.
-    #     de[k] += cp.einsum('xpq,pq->x', h1ao, dmz1doo)
-
-    #     de[k] -= cp.einsum('xpq,pq->x', s1[:,p0:p1], im0[p0:p1])
-    #     de[k] -= cp.einsum('xqp,pq->x', s1[:,p0:p1], im0[:,p0:p1])
-
-    #     de[k] += cp.einsum('xij,ij->x', vhf1[1,:,p0:p1], oo0[p0:p1])
-    #     de[k] += cp.einsum('xij,ij->x', vhf1[2,:,p0:p1], dmxpy[p0:p1,:]) * 2
-    #     de[k] += cp.einsum('xij,ij->x', vhf1[3,:,p0:p1], dmxmy[p0:p1,:]) * 2
-    #     de[k] += cp.einsum('xji,ij->x', vhf1[2,:,p0:p1], dmxpy[:,p0:p1]) * 2
-    #     de[k] -= cp.einsum('xji,ij->x', vhf1[3,:,p0:p1], dmxmy[:,p0:p1]) * 2
-
-    #     de[k] += td_grad.extra_force(ia, locals())
+    de = 2.0 * (dvhf_DD_DP + dvhf_xpy) + dh1e_ground + dh1e_td + delec + extra_force
+    if atmlst is None:
+        atmlst = range(mol.natm)
+    offsetdic = mol.offset_nr_by_atom()
+    for k, ia in enumerate(atmlst):
+        shl0, shl1, p0, p1 = offsetdic[ia]
+        de[k] += cp.einsum('xij,ij->x', vhf1[:,p0:p1], dmxmy[p0:p1,:]) * 2
+        de[k] -= cp.einsum('xji,ij->x', vhf1[:,p0:p1], dmxmy[:,p0:p1]) * 2
 
     log.timer('TDHF nuclear gradients', *time0)
     return de.get()
