@@ -156,8 +156,14 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
     dvhf_DD_DP = mf_grad.get_veff(mol, (dmz1doo+dmz1doo.T)*0.5 + oo0*2)
     dvhf_DD_DP -= mf_grad.get_veff(mol, (dmz1doo+dmz1doo.T)*0.5)
     dvhf_xpy = mf_grad.get_veff(mol, dmxpy+dmxpy.T)*2
-    # dvhf_xmy = mf_grad.get_veff(mol, dmxmy+dmxmy.T)
-    dvhf_xmy = mf_grad.get_veff(mol, dmxmy-dmxmy.T)*4
+    dvhf_xmy = mf_grad.get_veff(mol, dmxmy-dmxmy.T)*2
+    dvhf_xmy+= mf_grad.get_veff(mol, dmxmy.T)*2
+    dvhf_xmy-= mf_grad.get_veff(mol, dmxmy)*2
+    dvhf_xmy1 = dvhf_xmy/2
+    dvhf_xmy = mf_grad.get_veff(mol, dmxmy-dmxmy.T)*2
+    dvhf_xmy+= mf_grad.get_veff(mol, dmxmy)*2
+    dvhf_xmy-= mf_grad.get_veff(mol, dmxmy.T)*2
+    dvhf_xmy2 = dvhf_xmy/2
 
     extra_force = cp.zeros((len(atmlst),3))
     for k, ia in enumerate(atmlst):
@@ -166,7 +172,7 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
     delec = 2.0*(dh_ground + dh_td - ds)
     aoslices = mol.aoslice_by_atom()
     delec= cp.asarray([cp.sum(delec[:, p0:p1], axis=1) for p0, p1 in aoslices[:,2:]])
-    de = 2.0 * (dvhf_DD_DP + dvhf_xpy + dvhf_xmy) + dh1e_ground + dh1e_td + delec + extra_force
+    de = 2.0 * (dvhf_DD_DP + dvhf_xpy - dvhf_xmy1 + dvhf_xmy2) + dh1e_ground + dh1e_td + delec + extra_force
     # de = 2.0*dvhf_DD_DP + dh1e_ground + dh1e_td + delec + extra_force
 
     # for k, ia in enumerate(atmlst):
