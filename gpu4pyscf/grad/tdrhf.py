@@ -20,8 +20,8 @@ from pyscf import gto
 from pyscf import lib
 from pyscf.lib import logger
 from gpu4pyscf.grad import rhf as rhf_grad
-from gpu4pyscf.df import int3c2e      #TODO: move int3c2e to out of df
-from gpu4pyscf.lib.cupy_helper import tag_array, contract, condense, sandwich_dot, reduce_to_device
+from gpu4pyscf.df import int3c2e     
+from gpu4pyscf.lib.cupy_helper import  contract
 from gpu4pyscf.scf import cphf
 from gpu4pyscf import lib as lib_gpu
 from pyscf import __config__
