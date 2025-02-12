@@ -22,7 +22,8 @@ from pyscf.scf import chkfile
 from gpu4pyscf import lib
 from gpu4pyscf.lib import utils
 from gpu4pyscf.lib.cupy_helper import eigh, tag_array, return_cupy_array, cond
-from gpu4pyscf.scf import diis, jk
+from gpu4pyscf.scf import diis
+from gpu4pyscf.scf import jk_mixed_precision as jk
 from gpu4pyscf.lib import logger
 
 __all__ = [

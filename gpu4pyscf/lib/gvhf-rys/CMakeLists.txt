@@ -1,4 +1,4 @@
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --ptxas-options=-v")# -maxrregcount=128")
+# set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --ptxas-options=-v")# -maxrregcount=128")
 
 add_library(gvhf_rys SHARED
   rys_contract_jk.cu rys_jk_driver.cu rys_roots_dat.cu
