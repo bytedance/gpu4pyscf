@@ -162,6 +162,7 @@ def get_jk(mol, dm, hermi=0, vhfopt=None, with_j=True, with_k=True, verbose=None
                 ctypes.cast(tile_kl_mapping.data.ptr, ctypes.c_void_p),
                 tile_q_ptr, q_ptr, s_ptr,
                 ctypes.cast(dm_cond.data.ptr, ctypes.c_void_p),
+                ctypes.c_float(log_max_dm),
                 ctypes.c_float(log_cutoff),
                 ctypes.c_float(log_single_double_cutoff),
                 ctypes.cast(pool.data.ptr, ctypes.c_void_p),

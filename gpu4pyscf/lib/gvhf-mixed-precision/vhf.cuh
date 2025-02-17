@@ -97,6 +97,7 @@ typedef struct {
     float *tile_q_cond;
     float *s_estimator;
     float *dm_cond;
+    float log_max_dm;
     float cutoff;
     float single_double_cutoff;
 } BoundsInfo;

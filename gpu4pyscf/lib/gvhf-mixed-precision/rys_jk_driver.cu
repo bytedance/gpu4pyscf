@@ -35,8 +35,9 @@ __constant__ Fold3Index c_i_in_fold3idx[495];
 //                                     ShellQuartet *pool, uint32_t *batch_head);
 // extern __global__ void rys_j_with_gout_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
 //                                     ShellQuartet *pool, uint32_t *batch_head);
-extern __global__ void rys_jk_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
-                                     ShellQuartet *pool, uint32_t *batch_head);
+template <typename FloatType> extern
+__global__ void rys_jk_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
+                              ShellQuartet *pool, uint32_t *batch_head);
 // extern __global__ void rys_jk_ip1_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
 //                                          ShellQuartet *pool, uint32_t *batch_head);
 // extern __global__ void rys_ejk_ip1_kernel(RysIntEnvVars envs, JKEnergy jk, BoundsInfo bounds,
@@ -144,7 +145,7 @@ int RYS_build_jk(double *vj, double *vk, double *dm, int n_dm, int nao,
                  RysIntEnvVars envs, int *scheme, int *shls_slice,
                  int ntile_ij_pairs, int ntile_kl_pairs,
                  int *tile_ij_mapping, int *tile_kl_mapping, float *tile_q_cond,
-                 float *q_cond, float *s_estimator, float *dm_cond,
+                 float *q_cond, float *s_estimator, float *dm_cond, float log_max_dm,
                  float cutoff, float single_double_cutoff,
                  ShellQuartet *pool, uint32_t *batch_head, int workers,
                  int *atm, int natm, int *bas, int nbas, double *env)
@@ -180,7 +181,7 @@ int RYS_build_jk(double *vj, double *vk, double *dm, int n_dm, int nao,
     BoundsInfo bounds = {li, lj, lk, ll, nfi, nfk, nfij, nfkl,
         nroots, stride_j, stride_k, stride_l, iprim, jprim, kprim, lprim,
         ntile_ij_pairs, ntile_kl_pairs, tile_ij_mapping, tile_kl_mapping,
-        q_cond, tile_q_cond, s_estimator, dm_cond, cutoff, single_double_cutoff};
+        q_cond, tile_q_cond, s_estimator, dm_cond, log_max_dm, cutoff, single_double_cutoff};
 
     JKMatrix jk = {vj, vk, dm, (uint16_t)n_dm};
     cudaMemset(batch_head, 0, 2*sizeof(uint32_t));
@@ -193,7 +194,9 @@ int RYS_build_jk(double *vj, double *vk, double *dm, int n_dm, int nao,
         int ij_prims = iprim * jprim;
         dim3 threads(quartets_per_block, gout_stride);
         int buflen = (nroots*2 + g_size*3 + ij_prims + 9) * quartets_per_block;// + ij_prims*4*TILE2;
-        rys_jk_kernel<<<workers, threads, buflen*sizeof(double)>>>(envs, jk, bounds, pool, batch_head);
+        rys_jk_kernel<double><<<workers, threads, buflen*sizeof(double)>>>(envs, jk, bounds, pool, batch_head);
+        cudaMemset(batch_head, 0, 2*sizeof(uint32_t));
+        rys_jk_kernel< float><<<workers, threads, buflen*sizeof( float)>>>(envs, jk, bounds, pool, batch_head);
     }
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -474,7 +477,8 @@ int RYS_init_constant(int *g_pair_idx, int *offsets,
     //cudaMemcpyToSymbol(c_env, env, sizeof(double)*env_size);
     cudaMemcpyToSymbol(c_g_pair_idx, g_pair_idx, 3675*sizeof(int));
     cudaMemcpyToSymbol(c_g_pair_offsets, offsets, sizeof(int) * LMAX1*LMAX1);
-    cudaFuncSetAttribute(rys_jk_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shm_size);
+    cudaFuncSetAttribute(rys_jk_kernel<double>, cudaFuncAttributeMaxDynamicSharedMemorySize, shm_size);
+    cudaFuncSetAttribute(rys_jk_kernel< float>, cudaFuncAttributeMaxDynamicSharedMemorySize, shm_size);
     // cudaFuncSetAttribute(rys_jk_ip1_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shm_size);
     // cudaFuncSetAttribute(rys_ejk_ip1_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shm_size);
     // cudaFuncSetAttribute(rys_ejk_ip2_type12_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shm_size);

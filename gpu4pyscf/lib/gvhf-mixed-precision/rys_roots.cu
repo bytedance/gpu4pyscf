@@ -115,3 +115,102 @@ static void rys_roots_rs(int nroots, double theta, double rr, double omega,
         }
     }
 }
+
+template <typename FloatType>
+__device__
+static void rys_roots_mixed_precision(const int nroots, const FloatType x, FloatType *rw,
+                                      const int block_size, const int rt_id, const int stride)
+{
+    FloatType *r = rw;
+    FloatType *w = rw + block_size;
+    int block_size2 = block_size * 2;
+    if (x < 3.e-7){
+        int off = nroots * (nroots - 1) / 2;
+        for (int i = rt_id; i < nroots; i += stride)  {
+            r[i*block_size2] = ROOT_SMALLX_R0[off+i] + ROOT_SMALLX_R1[off+i] * x;
+            w[i*block_size2] = ROOT_SMALLX_W0[off+i] + ROOT_SMALLX_W1[off+i] * x;
+        }
+        return;
+    }
+
+    if (x > 35+nroots*5) {
+        int off = nroots * (nroots - 1) / 2;
+        const FloatType t = sqrt(FloatType(PIE4) / x);
+        for (int i = rt_id; i < nroots; i += stride)  {
+            r[i*block_size2] = ROOT_LARGEX_R_DATA[off+i] / x;
+            w[i*block_size2] = ROOT_LARGEX_W_DATA[off+i] * t;
+        }
+        return;
+    }
+
+    if (nroots == 1) {
+        const FloatType tt = sqrt(x);
+        const FloatType fmt0 = FloatType(SQRTPIE4) / tt * erf(tt);
+        w[0] = fmt0;
+        const FloatType e = exp(-x);
+        const FloatType b = FloatType(0.5) / x;
+        const FloatType fmt1 = b * (fmt0 - e);
+        r[0] = fmt1 / fmt0;
+        return;
+    }
+
+    double *datax = ROOT_RW_DATA + DEGREE1*INTERVALS * nroots*(nroots-1);
+    int it = (int)(x * FloatType(0.4));
+    const double u = (double(x) - it * 2.5) * 0.8 - 1.0;
+    const double u2 = u * 2.0;
+    for (int i = rt_id; i < nroots*2; i += stride) {
+        double *c = datax + i * DEGREE1 * INTERVALS;
+        //for i in range(2, degree + 1):
+        //    c0, c1 = c[degree-i] - c1, c0 + c1*u2
+        double c0 = c[it + DEGREE   *INTERVALS];
+        double c1 = c[it +(DEGREE-1)*INTERVALS];
+        double c2, c3;
+#pragma unroll
+        for (int n = DEGREE-2; n > 0; n-=2) {
+            c2 = c[it + n   *INTERVALS] - c1;
+            c3 = c0 + c1*u2;
+            c1 = c2 + c3*u2;
+            c0 = c[it +(n-1)*INTERVALS] - c3;
+        }
+        if (DEGREE % 2 == 0) {
+            c2 = c[it] - c1;
+            c3 = c0 + c1*u2;
+            rw[i*block_size] = c2 + c3*u;
+        } else {
+            rw[i*block_size] = c0 + c1*u;
+        }
+    }
+}
+
+// rys_roots for range-separation Coulomb
+template <typename FloatType>
+__device__
+static void rys_roots_rs_mixed_precision(const int nroots, const FloatType theta, const FloatType rr, const FloatType omega,
+                                         FloatType *rw, const int block_size, const int rt_id, const int stride)
+{
+    const FloatType theta_rr = theta * rr;
+    if (omega == 0) {
+        rys_roots_mixed_precision<FloatType>(nroots, theta_rr, rw, block_size, rt_id, stride);
+    } else if (omega > 0) {
+        const FloatType theta_fac = omega * omega / (omega * omega + theta);
+        rys_roots_mixed_precision<FloatType>(nroots, theta_fac*theta_rr, rw, block_size, rt_id, stride);
+        __syncthreads();
+        const FloatType sqrt_theta_fac = sqrt(theta_fac);
+        for (int irys = rt_id; irys < nroots; irys+=stride) {
+            rw[ irys*2   *block_size] *= theta_fac;
+            rw[(irys*2+1)*block_size] *= sqrt_theta_fac;
+        }
+    } else {
+        int _nroots = nroots / 2;
+        FloatType *rw1 = rw + nroots*block_size;
+        rys_roots_mixed_precision<FloatType>(_nroots, theta_rr, rw1, block_size, rt_id, stride);
+        const FloatType theta_fac = omega * omega / (omega * omega + theta);
+        rys_roots_mixed_precision<FloatType>(_nroots, theta_fac*theta_rr, rw, block_size, rt_id, stride);
+        __syncthreads();
+        const FloatType sqrt_theta_fac = -sqrt(theta_fac);
+        for (int irys = rt_id; irys < _nroots; irys+=stride) {
+            rw[ irys*2   *block_size] *= theta_fac;
+            rw[(irys*2+1)*block_size] *= sqrt_theta_fac;
+        }
+    }
+}

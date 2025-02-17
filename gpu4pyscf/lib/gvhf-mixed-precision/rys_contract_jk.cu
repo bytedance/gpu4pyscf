@@ -26,6 +26,7 @@
 // TODO: benchmark performance for 34, 36, 41, 43, 45, 47, 51, 57
 #define GOUT_WIDTH      42
 
+template<typename FloatType>
 __device__
 static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
                            ShellQuartet *shl_quartet_idx, int ntasks)
@@ -66,24 +67,25 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
     int nao = ao_loc[nbas];
     //double *env = c_env;
     double *env = envs.env;
-    double omega = env[PTR_RANGE_OMEGA];
+    FloatType omega = env[PTR_RANGE_OMEGA];
 
-    extern __shared__ double rw_cache[];
-    double *rw = rw_cache + sq_id;
-    double *g = rw + nsq_per_block * nroots*2;
-    double *gx = g;
-    double *gy = g + nsq_per_block * g_size;
-    double *gz = gy + nsq_per_block * g_size;
-    double *rjri = gz + nsq_per_block * g_size;
-    double *rlrk = rjri + nsq_per_block * 3;
-    double *Rpq = rlrk + nsq_per_block * 3;
-    double *cicj_cache = Rpq + nsq_per_block * 3;
-    double gout[GOUT_WIDTH];
+    extern __shared__ char shared_memory[];
+    FloatType *rw_cache = (FloatType *)shared_memory;
+    FloatType *rw = rw_cache + sq_id;
+    FloatType *g = rw + nsq_per_block * nroots*2;
+    FloatType *gx = g;
+    FloatType *gy = g + nsq_per_block * g_size;
+    FloatType *gz = gy + nsq_per_block * g_size;
+    FloatType *rjri = gz + nsq_per_block * g_size;
+    FloatType *rlrk = rjri + nsq_per_block * 3;
+    FloatType *Rpq = rlrk + nsq_per_block * 3;
+    FloatType *cicj_cache = Rpq + nsq_per_block * 3;
+    FloatType gout[GOUT_WIDTH];
 
     for (int task0 = 0; task0 < ntasks; task0 += nsq_per_block) {
         __syncthreads();
         int task_id = task0 + sq_id;
-        double fac_sym = PI_FAC;
+        FloatType fac_sym = PI_FAC;
         ShellQuartet sq;
         if (task_id >= ntasks) {
             // To avoid __syncthreads blocking blocking idle warps, all remaining
@@ -98,9 +100,9 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         int ksh = sq.k;
         int lsh = sq.l;
         //int sh_ij = (ish % TILE) * TILE + (jsh % TILE);
-        if (ish == jsh) fac_sym *= .5;
-        if (ksh == lsh) fac_sym *= .5;
-        if (ish*nbas+jsh == ksh*nbas+lsh) fac_sym *= .5;
+        if (ish == jsh) fac_sym *= static_cast<FloatType>(0.5);
+        if (ksh == lsh) fac_sym *= static_cast<FloatType>(0.5);
+        if (ish*nbas+jsh == ksh*nbas+lsh) fac_sym *= static_cast<FloatType>(0.5);
         int i0 = ao_loc[ish];
         int j0 = ao_loc[jsh];
         int k0 = ao_loc[ksh];
@@ -117,14 +119,14 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double *rj = env + bas[jsh*BAS_SLOTS+PTR_BAS_COORD];
         double *rk = env + bas[ksh*BAS_SLOTS+PTR_BAS_COORD];
         double *rl = env + bas[lsh*BAS_SLOTS+PTR_BAS_COORD];
-        double xjxi = rj[0] - ri[0];
-        double yjyi = rj[1] - ri[1];
-        double zjzi = rj[2] - ri[2];
-        double rr_ij = xjxi*xjxi + yjyi*yjyi + zjzi*zjzi;
+        const FloatType xjxi = static_cast<FloatType>(rj[0]) - static_cast<FloatType>(ri[0]);
+        const FloatType yjyi = static_cast<FloatType>(rj[1]) - static_cast<FloatType>(ri[1]);
+        const FloatType zjzi = static_cast<FloatType>(rj[2]) - static_cast<FloatType>(ri[2]);
+        const FloatType rr_ij = xjxi*xjxi + yjyi*yjyi + zjzi*zjzi;
         if (gout_id == 0) {
-            double xlxk = rl[0] - rk[0];
-            double ylyk = rl[1] - rk[1];
-            double zlzk = rl[2] - rk[2];
+            const FloatType xlxk = static_cast<FloatType>(rl[0]) - static_cast<FloatType>(rk[0]);
+            const FloatType ylyk = static_cast<FloatType>(rl[1]) - static_cast<FloatType>(rk[1]);
+            const FloatType zlzk = static_cast<FloatType>(rl[2]) - static_cast<FloatType>(rk[2]);
             rjri[0*nsq_per_block] = xjxi;
             rjri[1*nsq_per_block] = yjyi;
             rjri[2*nsq_per_block] = zjzi;
@@ -135,12 +137,12 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         for (int ij = gout_id; ij < iprim*jprim; ij += gout_stride) {
             int ip = ij / jprim;
             int jp = ij % jprim;
-            double ai = expi[ip];
-            double aj = expj[jp];
-            double aij = ai + aj;
-            double theta_ij = ai * aj / aij;
-            double Kab = exp(-theta_ij * rr_ij);
-            cicj_cache[ij*nsq_per_block] = fac_sym * ci[ip] * cj[jp] * Kab;
+            const FloatType ai = static_cast<FloatType>(expi[ip]);
+            const FloatType aj = static_cast<FloatType>(expj[jp]);
+            const FloatType aij = ai + aj;
+            const FloatType theta_ij = ai * aj / aij;
+            const FloatType Kab = exp(-theta_ij * rr_ij);
+            cicj_cache[ij*nsq_per_block] = fac_sym * static_cast<FloatType>(ci[ip]) * static_cast<FloatType>(cj[jp]) * Kab;
         }
         for (int gout_start = 0; gout_start < nfij*nfkl; gout_start+=gout_stride*GOUT_WIDTH) {
 #pragma unroll
@@ -149,56 +151,56 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         for (int klp = 0; klp < kprim*lprim; ++klp) {
             int kp = klp / lprim;
             int lp = klp % lprim;
-            double ak = expk[kp];
-            double al = expl[lp];
-            double akl = ak + al;
-            double al_akl = al / akl;
+            const FloatType ak = static_cast<FloatType>(expk[kp]);
+            const FloatType al = static_cast<FloatType>(expl[lp]);
+            const FloatType akl = ak + al;
+            const FloatType al_akl = al / akl;
             __syncthreads();
             if (gout_id == 0) {
-                double xlxk = rlrk[0*nsq_per_block];
-                double ylyk = rlrk[1*nsq_per_block];
-                double zlzk = rlrk[2*nsq_per_block];
-                double rr_kl = xlxk*xlxk + ylyk*ylyk + zlzk*zlzk;
-                double theta_kl = ak * al / akl;
-                double Kcd = exp(-theta_kl * rr_kl);
-                double ckcl = ck[kp] * cl[lp] * Kcd;
+                const FloatType xlxk = rlrk[0*nsq_per_block];
+                const FloatType ylyk = rlrk[1*nsq_per_block];
+                const FloatType zlzk = rlrk[2*nsq_per_block];
+                const FloatType rr_kl = xlxk*xlxk + ylyk*ylyk + zlzk*zlzk;
+                const FloatType theta_kl = ak * al / akl;
+                const FloatType Kcd = exp(-theta_kl * rr_kl);
+                const FloatType ckcl = static_cast<FloatType>(ck[kp]) * static_cast<FloatType>(cl[lp]) * Kcd;
                 gx[0] = ckcl;
             }
             for (int ijp = 0; ijp < iprim*jprim; ++ijp) {
                 int ip = ijp / jprim;
                 int jp = ijp % jprim;
-                double ai = expi[ip];
-                double aj = expj[jp];
-                double aij = ai + aj;
-                double aj_aij = aj / aij;
-                double xij = ri[0] + rjri[0*nsq_per_block] * aj_aij;
-                double yij = ri[1] + rjri[1*nsq_per_block] * aj_aij;
-                double zij = ri[2] + rjri[2*nsq_per_block] * aj_aij;
-                double xkl = rk[0] + rlrk[0*nsq_per_block] * al_akl;
-                double ykl = rk[1] + rlrk[1*nsq_per_block] * al_akl;
-                double zkl = rk[2] + rlrk[2*nsq_per_block] * al_akl;
-                double xpq = xij - xkl;
-                double ypq = yij - ykl;
-                double zpq = zij - zkl;
+                const FloatType ai = static_cast<FloatType>(expi[ip]);
+                const FloatType aj = static_cast<FloatType>(expj[jp]);
+                const FloatType aij = ai + aj;
+                const FloatType aj_aij = aj / aij;
+                const FloatType xij = static_cast<FloatType>(ri[0]) + rjri[0*nsq_per_block] * aj_aij;
+                const FloatType yij = static_cast<FloatType>(ri[1]) + rjri[1*nsq_per_block] * aj_aij;
+                const FloatType zij = static_cast<FloatType>(ri[2]) + rjri[2*nsq_per_block] * aj_aij;
+                const FloatType xkl = static_cast<FloatType>(rk[0]) + rlrk[0*nsq_per_block] * al_akl;
+                const FloatType ykl = static_cast<FloatType>(rk[1]) + rlrk[1*nsq_per_block] * al_akl;
+                const FloatType zkl = static_cast<FloatType>(rk[2]) + rlrk[2*nsq_per_block] * al_akl;
+                const FloatType xpq = xij - xkl;
+                const FloatType ypq = yij - ykl;
+                const FloatType zpq = zij - zkl;
                 __syncthreads();
                 if (gout_id == 0) {
                     Rpq[0*nsq_per_block] = xpq;
                     Rpq[1*nsq_per_block] = ypq;
                     Rpq[2*nsq_per_block] = zpq;
-                    double cicj = cicj_cache[ijp*nsq_per_block];
+                    const FloatType cicj = cicj_cache[ijp*nsq_per_block];
                     gy[0] = cicj / (aij*akl*sqrt(aij+akl));
                 }
-                double rr = xpq*xpq + ypq*ypq + zpq*zpq;
-                double theta = aij * akl / (aij + akl);
-                rys_roots_rs(nroots, theta, rr, omega, rw, nsq_per_block, gout_id, gout_stride);
-                double s0x, s1x, s2x;
+                const FloatType rr = xpq*xpq + ypq*ypq + zpq*zpq;
+                const FloatType theta = aij * akl / (aij + akl);
+                rys_roots_rs_mixed_precision<FloatType>(nroots, theta, rr, omega, rw, nsq_per_block, gout_id, gout_stride);
+                FloatType s0x, s1x, s2x;
                 for (int irys = 0; irys < nroots; ++irys) {
                     __syncthreads();
                     if (gout_id == 0) {
                         gz[0] = rw[(irys*2+1)*nsq_per_block];
                     }
-                    double rt = rw[irys*2*nsq_per_block];
-                    double rt_aa = rt / (aij + akl);
+                    const FloatType rt = rw[irys*2*nsq_per_block];
+                    const FloatType rt_aa = rt / (aij + akl);
 
                     // TRR
                     //for i in range(lij):
@@ -207,14 +209,14 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
                     //    for i in range(lij+1):
                     //        trr(i,k+1) = c0p * trr(i,k) + k*b01 * trr(i,k-1) + i*b00 * trr(i-1,k)
                     if (lij > 0) {
-                        double rt_aij = rt_aa * akl;
-                        double b10 = .5/aij * (1 - rt_aij);
+                        const FloatType rt_aij = rt_aa * akl;
+                        const FloatType b10 = static_cast<FloatType>(0.5)/aij * (static_cast<FloatType>(1.0) - rt_aij);
                         __syncthreads();
                         // gx(0,n+1) = c0*gx(0,n) + n*b10*gx(0,n-1)
                         for (int n = gout_id; n < 3; n += gout_stride) {
-                            double *_gx = g + n * g_size * nsq_per_block;
-                            double Rpa = rjri[n*nsq_per_block] * aj_aij;
-                            double c0x = Rpa - rt_aij * Rpq[n*nsq_per_block];
+                            FloatType *_gx = g + n * g_size * nsq_per_block;
+                            const FloatType Rpa = rjri[n*nsq_per_block] * aj_aij;
+                            const FloatType c0x = Rpa - rt_aij * Rpq[n*nsq_per_block];
                             s0x = _gx[0];
                             s1x = c0x * s0x;
                             _gx[nsq_per_block] = s1x;
@@ -228,17 +230,17 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
                     }
 
                     if (lkl > 0) {
-                        double rt_akl = rt_aa * aij;
-                        double b00 = .5 * rt_aa;
-                        double b01 = .5/akl * (1 - rt_akl);
+                        const FloatType rt_akl = rt_aa * aij;
+                        const FloatType b00 = static_cast<FloatType>(0.5) * rt_aa;
+                        const FloatType b01 = static_cast<FloatType>(0.5)/akl * (static_cast<FloatType>(1.0) - rt_akl);
                         int lij3 = (lij+1)*3;
                         for (int n = gout_id; n < lij3+gout_id; n += gout_stride) {
                             __syncthreads();
                             int i = n / 3; //for i in range(lij+1):
                             int _ix = n % 3; // TODO: remove _ix for nroots > 2
-                            double *_gx = g + (i + _ix * g_size) * nsq_per_block;
-                            double Rqc = rlrk[_ix*nsq_per_block] * al_akl;
-                            double cpx = Rqc + rt_akl * Rpq[_ix*nsq_per_block];
+                            FloatType *_gx = g + (i + _ix * g_size) * nsq_per_block;
+                            const FloatType Rqc = rlrk[_ix*nsq_per_block] * al_akl;
+                            const FloatType cpx = Rqc + rt_akl * Rpq[_ix*nsq_per_block];
                             //for i in range(lij+1):
                             //    trr(i,1) = c0p * trr(i,0) + i*b00 * trr(i-1,0)
                             if (n < lij3) {
@@ -278,8 +280,8 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
                             for (int m = gout_id; m < lkl3; m += gout_stride) {
                                 int k = m / 3;
                                 int _ix = m % 3;
-                                double xjxi = rjri[_ix*nsq_per_block];
-                                double *_gx = g + (_ix*g_size + k*stride_k) * nsq_per_block;
+                                const FloatType xjxi = rjri[_ix*nsq_per_block];
+                                FloatType *_gx = g + (_ix*g_size + k*stride_k) * nsq_per_block;
                                 for (int j = 0; j < lj; ++j) {
                                     int ij = (lij-j) + j*stride_j;
                                     s1x = _gx[ij*nsq_per_block];
@@ -298,8 +300,8 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
                             for (int n = gout_id; n < stride_k*3; n += gout_stride) {
                                 int i = n / 3;
                                 int _ix = n % 3;
-                                double xlxk = rlrk[_ix*nsq_per_block];
-                                double *_gx = g + (_ix*g_size + i) * nsq_per_block;
+                                const FloatType xlxk = rlrk[_ix*nsq_per_block];
+                                FloatType *_gx = g + (_ix*g_size + i) * nsq_per_block;
                                 for (int l = 0; l < ll; ++l) {
                                     int kl = (lkl-l)*stride_k + l*stride_l;
                                     s1x = _gx[kl*nsq_per_block];
@@ -343,7 +345,7 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
                 int kl = ijkl / nfij;
                 int ij = ijkl % nfij;
                 if (kl >= nfkl) break;
-                double s = gout[n];
+                double s = static_cast<double>(gout[n]);
                 int i = ij % nfi;
                 int j = ij / nfi;
                 int k = kl % nfk;
@@ -376,6 +378,7 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
     } }
 }
 
+template <typename FloatType>
 __global__
 void rys_jk_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
                    ShellQuartet *pool, uint32_t *batch_head)
@@ -396,14 +399,14 @@ void rys_jk_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks(shl_quartet_idx, envs, jk, bounds,
-                                    batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
+                                                               batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
         }
         if (ntasks > 0) {
-            rys_jk_general(envs, jk, bounds, shl_quartet_idx, ntasks);
+            rys_jk_general<FloatType>(envs, jk, bounds, shl_quartet_idx, ntasks);
             __syncthreads();
         }
         if (t_id == 0) {
@@ -413,3 +416,6 @@ void rys_jk_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         __syncthreads();
     }
 }
+
+template __global__ void rys_jk_kernel<double>(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds, ShellQuartet *pool, uint32_t *batch_head);
+template __global__ void rys_jk_kernel< float>(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds, ShellQuartet *pool, uint32_t *batch_head);
