@@ -49,7 +49,7 @@ __global__ void rys_jk_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds
 // extern int rys_j_unrolled(RysIntEnvVars *envs, JKMatrix *jk, BoundsInfo *bounds,
 //                     ShellQuartet *pool, uint32_t *batch_head, int *scheme, int workers);
 extern int rys_jk_unrolled(RysIntEnvVars *envs, JKMatrix *jk, BoundsInfo *bounds,
-                    ShellQuartet *pool, uint32_t *batch_head, int *scheme, int workers);
+                           ShellQuartet *pool, uint32_t *batch_head, int *scheme, int workers);
 extern int os_jk_unrolled(RysIntEnvVars *envs, JKMatrix *jk, BoundsInfo *bounds,
                     ShellQuartet *pool, uint32_t *batch_head,
                     int *scheme, int workers, double omega);

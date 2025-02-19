@@ -141,7 +141,7 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
             const FloatType aj = static_cast<FloatType>(expj[jp]);
             const FloatType aij = ai + aj;
             const FloatType theta_ij = ai * aj / aij;
-            const FloatType Kab = exp(-theta_ij * rr_ij);
+            const FloatType Kab = MixedPrecisionOperator<FloatType>::fp_exp(-theta_ij * rr_ij);
             cicj_cache[ij*nsq_per_block] = fac_sym * static_cast<FloatType>(ci[ip]) * static_cast<FloatType>(cj[jp]) * Kab;
         }
         for (int gout_start = 0; gout_start < nfij*nfkl; gout_start+=gout_stride*GOUT_WIDTH) {
@@ -162,7 +162,7 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
                 const FloatType zlzk = rlrk[2*nsq_per_block];
                 const FloatType rr_kl = xlxk*xlxk + ylyk*ylyk + zlzk*zlzk;
                 const FloatType theta_kl = ak * al / akl;
-                const FloatType Kcd = exp(-theta_kl * rr_kl);
+                const FloatType Kcd = MixedPrecisionOperator<FloatType>::fp_exp(-theta_kl * rr_kl);
                 const FloatType ckcl = static_cast<FloatType>(ck[kp]) * static_cast<FloatType>(cl[lp]) * Kcd;
                 gx[0] = ckcl;
             }
@@ -188,7 +188,7 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
                     Rpq[1*nsq_per_block] = ypq;
                     Rpq[2*nsq_per_block] = zpq;
                     const FloatType cicj = cicj_cache[ijp*nsq_per_block];
-                    gy[0] = cicj / (aij*akl*sqrt(aij+akl));
+                    gy[0] = cicj / (aij*akl* MixedPrecisionOperator<FloatType>::fp_sqrt(aij+akl));
                 }
                 const FloatType rr = xpq*xpq + ypq*ypq + zpq*zpq;
                 const FloatType theta = aij * akl / (aij + akl);
