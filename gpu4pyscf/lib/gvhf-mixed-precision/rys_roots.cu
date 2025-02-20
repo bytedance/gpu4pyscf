@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#include "gvhf-rys/rys_roots.cuh"
+#include "rys_roots.cuh"
+#include "mixed_precision_helper.h"
 
 #define SQRTPIE4        .8862269254527580136
 #define PIE4            .7853981633974483096
@@ -56,12 +57,12 @@ static void rys_roots(int nroots, double x, double *rw,
         return;
     }
 
-    double *datax = ROOT_RW_DATA + DEGREE1*INTERVALS * nroots*(nroots-1);
+    const double *datax = ROOT_RW_DATA + DEGREE1*INTERVALS * nroots*(nroots-1);
     int it = (int)(x * .4);
     double u = (x - it * 2.5) * 0.8 - 1.;
     double u2 = u * 2.;
     for (int i = rt_id; i < nroots*2; i += stride) {
-        double *c = datax + i * DEGREE1 * INTERVALS;
+        const double *c = datax + i * DEGREE1 * INTERVALS;
         //for i in range(2, degree + 1):
         //    c0, c1 = c[degree-i] - c1, c0 + c1*u2
         double c0 = c[it + DEGREE   *INTERVALS];
@@ -116,63 +117,62 @@ static void rys_roots_rs(int nroots, double theta, double rr, double omega,
     }
 }
 
-template <typename FloatType>
 __device__
-static void rys_roots_mixed_precision(const int nroots, const FloatType x, FloatType *rw,
-                                      const int block_size, const int rt_id, const int stride)
+static void rys_roots_single_precision(const int nroots, const float x, float *rw,
+                                       const int block_size, const int rt_id, const int stride)
 {
-    FloatType *r = rw;
-    FloatType *w = rw + block_size;
+    float *r = rw;
+    float *w = rw + block_size;
     int block_size2 = block_size * 2;
     if (x < 3.e-7){
         int off = nroots * (nroots - 1) / 2;
         for (int i = rt_id; i < nroots; i += stride)  {
-            r[i*block_size2] = ROOT_SMALLX_R0[off+i] + ROOT_SMALLX_R1[off+i] * x;
-            w[i*block_size2] = ROOT_SMALLX_W0[off+i] + ROOT_SMALLX_W1[off+i] * x;
+            r[i*block_size2] = SINGLE_ROOT_SMALLX_R0[off+i] + SINGLE_ROOT_SMALLX_R1[off+i] * x;
+            w[i*block_size2] = SINGLE_ROOT_SMALLX_W0[off+i] + SINGLE_ROOT_SMALLX_W1[off+i] * x;
         }
         return;
     }
 
     if (x > 35+nroots*5) {
         int off = nroots * (nroots - 1) / 2;
-        const FloatType t = sqrt(FloatType(PIE4) / x);
+        const float t = sqrtf(static_cast<float>(PIE4) / x);
         for (int i = rt_id; i < nroots; i += stride)  {
-            r[i*block_size2] = ROOT_LARGEX_R_DATA[off+i] / x;
-            w[i*block_size2] = ROOT_LARGEX_W_DATA[off+i] * t;
+            r[i*block_size2] = SINGLE_ROOT_LARGEX_R_DATA[off+i] / x;
+            w[i*block_size2] = SINGLE_ROOT_LARGEX_W_DATA[off+i] * t;
         }
         return;
     }
 
     if (nroots == 1) {
-        const FloatType tt = sqrt(x);
-        const FloatType fmt0 = FloatType(SQRTPIE4) / tt * erf(tt);
+        const float tt = sqrtf(x);
+        const float fmt0 = static_cast<float>(SQRTPIE4) / tt * erff(tt);
         w[0] = fmt0;
-        const FloatType e = exp(-x);
-        const FloatType b = FloatType(0.5) / x;
-        const FloatType fmt1 = b * (fmt0 - e);
+        const float e = expf(-x);
+        const float b = 0.5f / x;
+        const float fmt1 = b * (fmt0 - e);
         r[0] = fmt1 / fmt0;
         return;
     }
 
-    double *datax = ROOT_RW_DATA + DEGREE1*INTERVALS * nroots*(nroots-1);
-    int it = (int)(x * FloatType(0.4));
-    const double u = (double(x) - it * 2.5) * 0.8 - 1.0;
-    const double u2 = u * 2.0;
+    const float *datax = SINGLE_ROOT_RW_DATA + SINGLE_DEGREE1*INTERVALS * nroots*(nroots-1);
+    int it = (int)(x * 0.4f);
+    const float u = (x - it * 2.5f) * 0.8f - 1.0f;
+    const float u2 = u * 2.0f;
     for (int i = rt_id; i < nroots*2; i += stride) {
-        double *c = datax + i * DEGREE1 * INTERVALS;
+        const float *c = datax + i * SINGLE_DEGREE1 * INTERVALS;
         //for i in range(2, degree + 1):
         //    c0, c1 = c[degree-i] - c1, c0 + c1*u2
-        double c0 = c[it + DEGREE   *INTERVALS];
-        double c1 = c[it +(DEGREE-1)*INTERVALS];
-        double c2, c3;
+        float c0 = c[it + SINGLE_DEGREE   *INTERVALS];
+        float c1 = c[it +(SINGLE_DEGREE-1)*INTERVALS];
+        float c2, c3;
 #pragma unroll
-        for (int n = DEGREE-2; n > 0; n-=2) {
+        for (int n = SINGLE_DEGREE-2; n > 0; n-=2) {
             c2 = c[it + n   *INTERVALS] - c1;
             c3 = c0 + c1*u2;
             c1 = c2 + c3*u2;
             c0 = c[it +(n-1)*INTERVALS] - c3;
         }
-        if (DEGREE % 2 == 0) {
+        if (SINGLE_DEGREE % 2 == 0) {
             c2 = c[it] - c1;
             c3 = c0 + c1*u2;
             rw[i*block_size] = c2 + c3*u;
@@ -180,6 +180,17 @@ static void rys_roots_mixed_precision(const int nroots, const FloatType x, Float
             rw[i*block_size] = c0 + c1*u;
         }
     }
+}
+
+template <typename FloatType>
+__device__
+static void rys_roots_mixed_precision(const int nroots, const FloatType x, FloatType *rw,
+                                      const int block_size, const int rt_id, const int stride)
+{
+    if constexpr(IS_DOUBLE(FloatType))
+        rys_roots(nroots, x, rw, block_size, rt_id, stride);
+    else
+        rys_roots_single_precision(nroots, x, rw, block_size, rt_id, stride);
 }
 
 // rys_roots for range-separation Coulomb
