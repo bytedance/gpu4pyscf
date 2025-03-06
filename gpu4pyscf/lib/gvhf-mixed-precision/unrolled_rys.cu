@@ -204,8 +204,8 @@ static void rys_jk_0000(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -468,8 +468,8 @@ static void rys_jk_1000(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -817,8 +817,8 @@ static void rys_jk_1010(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -1371,8 +1371,8 @@ static void rys_jk_1011(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -1723,8 +1723,8 @@ static void rys_jk_1100(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -2281,8 +2281,8 @@ static void rys_jk_1110(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -3401,8 +3401,8 @@ static void rys_jk_1111(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -3714,8 +3714,8 @@ static void rys_jk_2000(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -4181,8 +4181,8 @@ static void rys_jk_2010(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -5036,8 +5036,8 @@ static void rys_jk_2011(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -5719,8 +5719,8 @@ static void rys_jk_2020(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -7249,8 +7249,8 @@ static void rys_jk_2021(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -7718,8 +7718,8 @@ static void rys_jk_2100(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -8573,8 +8573,8 @@ static void rys_jk_2110(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -10590,8 +10590,8 @@ static void rys_jk_2111(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -12189,8 +12189,8 @@ static void rys_jk_2120(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -12879,8 +12879,8 @@ static void rys_jk_2200(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -14417,8 +14417,8 @@ static void rys_jk_2210(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -14793,8 +14793,8 @@ static void rys_jk_3000(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -15410,8 +15410,8 @@ static void rys_jk_3010(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -16816,8 +16816,8 @@ static void rys_jk_3011(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -17788,8 +17788,8 @@ static void rys_jk_3020(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -18407,8 +18407,8 @@ static void rys_jk_3100(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -19809,8 +19809,8 @@ static void rys_jk_3110(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);
@@ -20788,8 +20788,8 @@ static void rys_jk_3200(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
             ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
                                        batch_ij, batch_kl);

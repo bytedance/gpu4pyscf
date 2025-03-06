@@ -182,7 +182,7 @@ static int _fill_jk_tasks(ShellQuartet *shl_quartet_idx,
 template<typename FloatType>
 __device__
 static int _fill_jk_tasks_mixed_precision(ShellQuartet *shl_quartet_idx,
-                                          RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
+                                          RysIntEnvVars envs, const bool do_j, const bool do_k, BoundsInfo bounds,
                                           int batch_ij, int batch_kl)
 {
     const int nbas = envs.nbas;
@@ -215,8 +215,6 @@ static int _fill_jk_tasks_mixed_precision(ShellQuartet *shl_quartet_idx,
     const int jsh0 = tile_j * TILE;
     const int ish1 = ish0 + TILE;
     const int jsh1 = jsh0 + TILE;
-    const int do_j = jk.vj != NULL;
-    const int do_k = jk.vk != NULL;
 
     int count = 0;
     const float tile_q_ij = tile_q_cond[tile_ij];

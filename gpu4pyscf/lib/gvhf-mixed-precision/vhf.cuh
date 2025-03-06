@@ -64,6 +64,22 @@ typedef struct {
     uint16_t atom_offset;
 } JKMatrix;
 
+template <typename FloatType> struct JKMatrixMixedPrecision;
+template <> struct JKMatrixMixedPrecision<float> {
+    float *vj;
+    float *vk;
+    float *dm;
+    uint16_t n_dm;
+    uint16_t atom_offset;
+};
+template <> struct JKMatrixMixedPrecision<double> {
+    double *vj;
+    double *vk;
+    double *dm;
+    uint16_t n_dm;
+    uint16_t atom_offset;
+};
+
 typedef struct {
     double *ejk;
     double *dm;

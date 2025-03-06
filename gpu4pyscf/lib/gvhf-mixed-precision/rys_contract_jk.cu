@@ -24,11 +24,11 @@
 #include "create_tasks.cu"
 
 // TODO: benchmark performance for 34, 36, 41, 43, 45, 47, 51, 57
-#define GOUT_WIDTH      42
+// #define GOUT_WIDTH      42
 
-template<typename FloatType>
+template<typename FloatType, int GOUT_WIDTH>
 __device__
-static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
+static void rys_jk_general(RysIntEnvVars envs, JKMatrixMixedPrecision<FloatType> jk, BoundsInfo bounds,
                            ShellQuartet *shl_quartet_idx, int ntasks)
 {
     // sq is short for shl_quartet
@@ -333,9 +333,9 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         if (task_id >= ntasks) {
             continue;
         }
-        double *dm = jk.dm;
-        double *vj = jk.vj;
-        double *vk = jk.vk;
+        FloatType *dm = jk.dm;
+        FloatType *vj = jk.vj;
+        FloatType *vk = jk.vk;
         int do_j = vj != NULL;
         int do_k = vk != NULL;
         for (int i_dm = 0; i_dm < jk.n_dm; ++i_dm) {
@@ -345,7 +345,7 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
                 int kl = ijkl / nfij;
                 int ij = ijkl % nfij;
                 if (kl >= nfkl) break;
-                double s = static_cast<double>(gout[n]);
+                FloatType s = gout[n];
                 int i = ij % nfi;
                 int j = ij / nfi;
                 int k = kl % nfk;
@@ -380,7 +380,7 @@ static void rys_jk_general(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
 
 template <typename FloatType>
 __global__
-void rys_jk_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
+void rys_jk_kernel(RysIntEnvVars envs, JKMatrixMixedPrecision<FloatType> jk, BoundsInfo bounds,
                    ShellQuartet *pool, uint32_t *batch_head)
 {
     int b_id = blockIdx.x;
@@ -399,14 +399,15 @@ void rys_jk_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
         double omega = envs.env[PTR_RANGE_OMEGA];
         int ntasks;
         if (omega >= 0) {
-            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk, bounds,
-                                                               batch_ij, batch_kl);
+            ntasks = _fill_jk_tasks_mixed_precision<FloatType>(shl_quartet_idx, envs, jk.vj != NULL, jk.vk != NULL,
+                                                               bounds, batch_ij, batch_kl);
         } else {
-            ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
-                                       batch_ij, batch_kl);
+            // ntasks = _fill_sr_jk_tasks(shl_quartet_idx, envs, jk, bounds,
+            //                            batch_ij, batch_kl);
         }
         if (ntasks > 0) {
-            rys_jk_general<FloatType>(envs, jk, bounds, shl_quartet_idx, ntasks);
+            constexpr int GOUT_WIDTH = (IS_DOUBLE(FloatType) ? 42 : 42);
+            rys_jk_general<FloatType, GOUT_WIDTH>(envs, jk, bounds, shl_quartet_idx, ntasks);
             __syncthreads();
         }
         if (t_id == 0) {
@@ -417,5 +418,5 @@ void rys_jk_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
     }
 }
 
-template __global__ void rys_jk_kernel<double>(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds, ShellQuartet *pool, uint32_t *batch_head);
-template __global__ void rys_jk_kernel< float>(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds, ShellQuartet *pool, uint32_t *batch_head);
+template __global__ void rys_jk_kernel<double>(RysIntEnvVars envs, JKMatrixMixedPrecision<double> jk, BoundsInfo bounds, ShellQuartet *pool, uint32_t *batch_head);
+template __global__ void rys_jk_kernel< float>(RysIntEnvVars envs, JKMatrixMixedPrecision< float> jk, BoundsInfo bounds, ShellQuartet *pool, uint32_t *batch_head);

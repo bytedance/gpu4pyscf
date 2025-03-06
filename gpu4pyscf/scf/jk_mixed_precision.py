@@ -33,6 +33,7 @@ from gpu4pyscf.__config__ import props as gpu_specs
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib import multi_gpu
 from gpu4pyscf.gto.mole import group_basis
+import time
 
 __all__ = [
     'get_jk', 'get_j',
@@ -58,6 +59,7 @@ GROUP_SIZE = 256
 def get_jk(mol, dm, hermi=0, vhfopt=None, with_j=True, with_k=True, verbose=None):
     '''Compute J, K matrices
     '''
+    # verbose = 10
     assert with_j or with_k
     log = logger.new_logger(mol, verbose)
     cput0 = log.init_timer()
@@ -90,8 +92,14 @@ def get_jk(mol, dm, hermi=0, vhfopt=None, with_j=True, with_k=True, verbose=None
     log_max_dm = float(dm_cond.max())
     log_cutoff = math.log(vhfopt.direct_scf_tol)
 
-    single_double_precision_cutoff = vhfopt.direct_scf_tol / (2**(-52) / 2**(-23))
+    single_double_precision_cutoff = vhfopt.direct_scf_tol / 2**(-23)
+    # single_double_precision_cutoff = vhfopt.direct_scf_tol / (2**(-52) / 2**(-23))
     log_single_double_cutoff = math.log(single_double_precision_cutoff)
+    # log_single_double_cutoff = log_cutoff
+    # log_single_double_cutoff = 0.0
+    print(f"vhfopt.direct_scf_tol = {vhfopt.direct_scf_tol}, single_double_precision_cutoff = {single_double_precision_cutoff}, max_dm = {cp.exp(log_max_dm)}")
+    print(f"log_cutoff = {log_cutoff}, log_single_double_cutoff = {log_single_double_cutoff}, log_max_dm = {log_max_dm}")
+    print(f"log10_cutoff = {log_cutoff / math.log(10)}, log10_single_double_cutoff = {log_single_double_cutoff / math.log(10)}, log10_max_dm = {log_max_dm / math.log(10)}")
     tasks = [(i,j,k,l)
              for i in range(n_groups)
              for j in range(i+1)
@@ -110,6 +118,7 @@ def get_jk(mol, dm, hermi=0, vhfopt=None, with_j=True, with_k=True, verbose=None
         if hermi == 0:
             # Contract the tril and triu parts separately
             dms = cp.vstack([dms, dms.transpose(0,2,1)])
+        dms_single = cp.asarray(dms, dtype = cp.float32)
         n_dm = dms.shape[0]
         tile_q_cond = vhfopt.tile_q_cond
         tile_q_ptr = ctypes.cast(tile_q_cond.data.ptr, ctypes.c_void_p)
@@ -120,13 +129,19 @@ def get_jk(mol, dm, hermi=0, vhfopt=None, with_j=True, with_k=True, verbose=None
 
         vj = vk = None
         vj_ptr = vk_ptr = lib.c_null_ptr()
+        vj_single = vk_single = None
+        vj_single_ptr = vk_single_ptr = lib.c_null_ptr()
         assert with_j or with_k
         if with_k:
             vk = cp.zeros(dms.shape)
             vk_ptr = ctypes.cast(vk.data.ptr, ctypes.c_void_p)
+            vk_single = cp.zeros(dms.shape, dtype = cp.float32)
+            vk_single_ptr = ctypes.cast(vk_single.data.ptr, ctypes.c_void_p)
         if with_j:
             vj = cp.zeros(dms.shape)
             vj_ptr = ctypes.cast(vj.data.ptr, ctypes.c_void_p)
+            vj_single = cp.zeros(dms.shape, dtype = cp.float32)
+            vj_single_ptr = ctypes.cast(vj_single.data.ptr, ctypes.c_void_p)
 
         tile_mappings = _make_tril_tile_mappings(l_ctr_bas_loc, tile_q_cond,
                                                  log_cutoff-log_max_dm)
@@ -140,19 +155,53 @@ def get_jk(mol, dm, hermi=0, vhfopt=None, with_j=True, with_k=True, verbose=None
         kern_counts = 0
         kern = libvhf_rys.RYS_build_jk
 
+        special_kernel_keys = [
+            (0,0,0,0),
+            (1,0,0,0),
+            (1,0,1,0),
+            (1,0,1,1),
+            (1,1,0,0),
+            (1,1,1,0),
+            (1,1,1,1),
+            (2,0,0,0),
+            (2,0,1,0),
+            (2,0,1,1),
+            (2,0,2,0),
+            (2,0,2,1),
+            (2,1,0,0),
+            (2,1,1,0),
+            (2,1,1,1),
+            (2,1,2,0),
+            (2,2,0,0),
+            (2,2,1,0),
+            (3,0,0,0),
+            (3,0,1,0),
+            (3,0,1,1),
+            (3,0,2,0),
+            (3,1,0,0),
+            (3,1,1,0),
+            (3,2,0,0),
+        ]
+        kernel_time = { key: 0 for key in special_kernel_keys }
+        kernel_time["general"] = 0
+
         while tasks:
             try:
                 task = tasks.pop()
             except IndexError:
                 break
 
+            cp.cuda.runtime.deviceSynchronize()
+            time0 = time.time()
             i, j, k, l = task
             shls_slice = l_ctr_bas_loc[[i, i+1, j, j+1, k, k+1, l, l+1]]
             tile_ij_mapping = tile_mappings[i,j]
             tile_kl_mapping = tile_mappings[k,l]
             scheme = schemes[task]
+            # print(f"uniq_l = {uniq_l[i], uniq_l[j], uniq_l[k], uniq_l[l]}, (i,j,k,l) = {(i,j,k,l)}, scheme = {scheme}, shls_slice = {shls_slice}, tile_ij_mapping = {tile_ij_mapping}, tile_kl_mapping = {tile_kl_mapping}, workers = {workers}")
             err = kern(
                 vj_ptr, vk_ptr, ctypes.cast(dms.data.ptr, ctypes.c_void_p),
+                vj_single_ptr, vk_single_ptr, ctypes.cast(dms_single.data.ptr, ctypes.c_void_p),
                 ctypes.c_int(n_dm), ctypes.c_int(nao),
                 vhfopt.rys_envs, (ctypes.c_int*2)(*scheme),
                 (ctypes.c_int*8)(*shls_slice),
@@ -170,6 +219,16 @@ def get_jk(mol, dm, hermi=0, vhfopt=None, with_j=True, with_k=True, verbose=None
                 ctypes.c_int(workers),
                 mol._atm.ctypes, ctypes.c_int(mol.natm),
                 mol._bas.ctypes, ctypes.c_int(mol.nbas), mol._env.ctypes)
+
+            cp.cuda.runtime.deviceSynchronize()
+            time1 = time.time()
+            delta_t = time1 - time0
+            kernel_angular = (uniq_l[i], uniq_l[j], uniq_l[k], uniq_l[l])
+            if kernel_angular in special_kernel_keys:
+                kernel_time[kernel_angular] += delta_t
+            else:
+                kernel_time["general"] += delta_t
+
             if err != 0:
                 llll = f'({l_symb[i]}{l_symb[j]}|{l_symb[k]}{l_symb[l]})'
                 raise RuntimeError(f'RYS_build_jk kernel for {llll} failed')
@@ -181,14 +240,19 @@ def get_jk(mol, dm, hermi=0, vhfopt=None, with_j=True, with_k=True, verbose=None
                 kern_counts += 1
             if num_devices > 1:
                 stream.synchronize()
+        for key, value in kernel_time.items():
+            print(f"{str(key):>15s}: {value:7.3f}{' <-' if value > 1.0 else ''}")
+        print(sum(kernel_time.values()))
 
         if with_j:
+            vj += vj_single
             if hermi == 1:
                 vj *= 2.
             else:
                 vj, vjT = vj[:n_dm//2], vj[n_dm//2:]
                 vj += vjT.transpose(0,2,1)
         if with_k:
+            vk += vk_single
             if hermi == 1:
                 vk = transpose_sum(vk)
             else:
@@ -561,6 +625,12 @@ class _VHFOpt:
                 _bas = cp.array(mol._bas)
                 _env = cp.array(_scale_sp_ctr_coeff(mol))
                 ao_loc = cp.array(mol.ao_loc)
+                print(f"_atm.shape = {_atm.shape}")
+                print(f"_bas.shape = {_bas.shape}")
+                np.set_printoptions(threshold=np.inf)
+                print(_bas)
+                print(f"_env.shape = {_env.shape}")
+                print(f"ao_loc.shape = {ao_loc.shape}")
                 self._rys_envs[device_id] = rys_envs = RysIntEnvVars(
                     mol.natm, mol.nbas,
                     _atm.data.ptr, _bas.data.ptr, _env.data.ptr,
@@ -583,6 +653,8 @@ def _scale_sp_ctr_coeff(mol):
     _env = mol._env.copy()
     ls = mol._bas[:,ANG_OF]
     ptr, idx = np.unique(mol._bas[:,PTR_COEFF], return_index=True)
+    print(f"mol._bas[:,PTR_COEFF].shape = {mol._bas[:,PTR_COEFF].shape}")
+    print(f"ptr.shape = {ptr.shape}")
     ptr = ptr[ls[idx] < 2]
     idx = idx[ls[idx] < 2]
     fac = ((ls[idx]*2+1) / (4*np.pi)) ** .5

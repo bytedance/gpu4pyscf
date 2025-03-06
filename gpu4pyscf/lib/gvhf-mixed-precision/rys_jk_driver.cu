@@ -36,7 +36,7 @@ __constant__ Fold3Index c_i_in_fold3idx[495];
 // extern __global__ void rys_j_with_gout_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
 //                                     ShellQuartet *pool, uint32_t *batch_head);
 template <typename FloatType> extern
-__global__ void rys_jk_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
+__global__ void rys_jk_kernel(RysIntEnvVars envs, JKMatrixMixedPrecision<FloatType> jk, BoundsInfo bounds,
                               ShellQuartet *pool, uint32_t *batch_head);
 // extern __global__ void rys_jk_ip1_kernel(RysIntEnvVars envs, JKMatrix jk, BoundsInfo bounds,
 //                                          ShellQuartet *pool, uint32_t *batch_head);
@@ -141,7 +141,9 @@ extern "C" {
 //     return 0;
 // }
 
-int RYS_build_jk(double *vj, double *vk, double *dm, int n_dm, int nao,
+int RYS_build_jk(double *vj, double *vk, double *dm,
+                 float *vj_single, float *vk_single, float *dm_single,
+                 int n_dm, int nao,
                  RysIntEnvVars envs, int *scheme, int *shls_slice,
                  int ntile_ij_pairs, int ntile_kl_pairs,
                  int *tile_ij_mapping, int *tile_kl_mapping, float *tile_q_cond,
@@ -194,9 +196,13 @@ int RYS_build_jk(double *vj, double *vk, double *dm, int n_dm, int nao,
         int ij_prims = iprim * jprim;
         dim3 threads(quartets_per_block, gout_stride);
         int buflen = (nroots*2 + g_size*3 + ij_prims + 9) * quartets_per_block;// + ij_prims*4*TILE2;
-        rys_jk_kernel<double><<<workers, threads, buflen*sizeof(double)>>>(envs, jk, bounds, pool, batch_head);
+
+        JKMatrixMixedPrecision<double> jk_double = { vj, vk, dm, (uint16_t)n_dm };
+        JKMatrixMixedPrecision< float> jk_single = { vj_single, vk_single, dm_single, (uint16_t)n_dm };
+
+        rys_jk_kernel<double><<<workers, threads, buflen*sizeof(double)>>>(envs, jk_double, bounds, pool, batch_head);
         cudaMemset(batch_head, 0, 2*sizeof(uint32_t));
-        rys_jk_kernel< float><<<workers, threads, buflen*sizeof( float)>>>(envs, jk, bounds, pool, batch_head);
+        rys_jk_kernel< float><<<workers, threads, buflen*sizeof( float)>>>(envs, jk_single, bounds, pool, batch_head);
     }
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
