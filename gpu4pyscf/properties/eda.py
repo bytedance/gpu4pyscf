@@ -41,16 +41,20 @@ def merge_mol(mol_list):
         merged = conc_mol(merged, mol_list[i])
     return merged
 
-def _get_total_system_Fock_and_energy(mf_sum, dm, H1e):
-    vhf = mf_sum.get_veff(mf_sum.mol, dm)
-    F = mf_sum.get_fock(h1e = H1e, dm = dm, vhf = vhf)
-    E = mf_sum.energy_elec(dm = dm, h1e = H1e, vhf = vhf)[0] + mf_sum.energy_nuc()
-    return F, E
+def _get_total_system_veff_and_energy(mf_sum, H1e, dm, dm_last = None, veff_last = None):
+    assert (dm_last is None) == (veff_last is None)
 
-def _get_fragment_Fock_and_energy(mf_list, mf_sum, H1e_list, nocc_offsets, mocc_sum):
+    veff = mf_sum.get_veff(mf_sum.mol, dm = dm, dm_last = dm_last, vhf_last = veff_last)
+    E = mf_sum.energy_elec(dm = dm, h1e = H1e, vhf = veff)[0] + mf_sum.energy_nuc()
+    return veff, E
+
+def _get_fragment_veff_and_energy(mf_list, mf_sum, H1e_list, nocc_offsets, mocc_sum,
+                                  mocc_sum_last = None, veff_list_last = None):
     n_frag = len(mf_list)
+    assert (mocc_sum_last is None) == (veff_list_last is None)
+    incremental_fock = (mocc_sum_last is not None)
 
-    Fock_list = []
+    veff_list = []
     energy_list = []
     for i_frag in range(n_frag):
         mf_i = mf_list[i_frag]
@@ -58,18 +62,24 @@ def _get_fragment_Fock_and_energy(mf_list, mf_sum, H1e_list, nocc_offsets, mocc_
         H1e_i = H1e_list[i_frag]
         mocc_i = mocc_sum[:, nocc_offsets[i_frag] : nocc_offsets[i_frag + 1]]
         dm_i = 2 * mocc_i @ mocc_i.T
-        vhf_i = mf_sum.get_veff(mf_sum.mol, dm_i)
-        F_i = mf_sum.get_fock(h1e = H1e_i, dm = dm_i, vhf = vhf_i)
-        E_i = mf_sum.energy_elec(dm = dm_i, h1e = H1e_i, vhf = vhf_i)[0] + mf_i.energy_nuc()
+        dm_i_last = None
+        veff_i_last = None
+        if incremental_fock:
+            mocc_i_last = mocc_sum_last[:, nocc_offsets[i_frag] : nocc_offsets[i_frag + 1]]
+            dm_i_last = 2 * mocc_i_last @ mocc_i_last.T
+            veff_i_last = veff_list_last[i_frag]
+
+        veff_i = mf_sum.get_veff(mf_sum.mol, dm = dm_i, dm_last = dm_i_last, vhf_last = veff_i_last)
+        E_i = mf_sum.energy_elec(dm = dm_i, h1e = H1e_i, vhf = veff_i)[0] + mf_i.energy_nuc()
         if mf_i.do_disp():
             E_i += mf_i.get_dispersion()
 
         dm_i = None
         vhf_i = None
-        Fock_list.append(F_i)
+        veff_list.append(veff_i)
         energy_list.append(E_i)
 
-    return Fock_list, energy_list
+    return veff_list, energy_list
 
 def _get_total_system_xc_energy(mf_sum, dm):
     # This function computes the K+XC energy of the given functional (specified in mf_sum)
@@ -214,7 +224,7 @@ def get_eda_electrostatic_energy(mf_list, _make_mf, eda_cache, build_orbital_hes
     mf_sum = _make_mf(mol_sum, if_kernel = False)
 
     logger.info(mf_sum, "Orthogonal Decomposition of the Initial Supersystem Wavefunction")
-    Fock_list, energy_list = _get_fragment_Fock_and_energy(mf_list, mf_sum, H1e_list, nocc_offsets, mocc_sum)
+    veff_list, energy_list = _get_fragment_veff_and_energy(mf_list, mf_sum, H1e_list, nocc_offsets, mocc_sum)
     energy_sum = float(sum(energy_list))
     logger.info(mf_sum, f"Cycle {0:2d}: energy = {energy_sum}")
     energy_unrelaxed = energy_sum
@@ -238,11 +248,11 @@ def get_eda_electrostatic_energy(mf_list, _make_mf, eda_cache, build_orbital_hes
         orbital_gradient = cp.zeros(nocc_frag_pair_sum)
         for i_frag in range(n_frag):
             mocc_i = mocc_sum[:, nocc_offsets[i_frag] : nocc_offsets[i_frag + 1]]
-            F_i = Fock_list[i_frag]
+            F_i = veff_list[i_frag] + H1e_list[i_frag]
 
             for j_frag in range(i_frag + 1, n_frag):
                 mocc_j = mocc_sum[:, nocc_offsets[j_frag] : nocc_offsets[j_frag + 1]]
-                F_j = Fock_list[j_frag]
+                F_j = veff_list[j_frag] + H1e_list[j_frag]
 
                 orbital_gradient_ij = 2 * mocc_i.T @ (F_j - F_i) @ mocc_j
                 ij_frag_pair = upper_trinagular_to_pair_index(i_frag, j_frag, n_frag)
@@ -250,25 +260,27 @@ def get_eda_electrostatic_energy(mf_list, _make_mf, eda_cache, build_orbital_hes
                     orbital_gradient_ij.reshape(nocc_count[i_frag] * nocc_count[j_frag])
                 orbital_gradient_ij = None
 
+        # Note: This is an approximated Hessian completely rebuilt at every iteration,
+        #       i.e. neither exact Newton, nor BFGS-like algorithm where the approximated Hessian is partially updated.
         if build_orbital_hessian:
             orbital_hessian = cp.zeros([nocc_frag_pair_sum, nocc_frag_pair_sum])
             for i_frag in range(n_frag):
                 mocc_i = mocc_sum[:, nocc_offsets[i_frag] : nocc_offsets[i_frag + 1]]
-                F_i = Fock_list[i_frag]
+                F_i = veff_list[i_frag] + H1e_list[i_frag]
 
                 for j_frag in range(i_frag + 1, n_frag):
                     mocc_j = mocc_sum[:, nocc_offsets[j_frag] : nocc_offsets[j_frag + 1]]
-                    F_j = Fock_list[j_frag]
+                    F_j = veff_list[j_frag] + H1e_list[j_frag]
 
                     ij_frag_pair = upper_trinagular_to_pair_index(i_frag, j_frag, n_frag)
 
                     for k_frag in range(0, n_frag):
                         mocc_k = mocc_sum[:, nocc_offsets[k_frag] : nocc_offsets[k_frag + 1]]
-                        F_k = Fock_list[k_frag]
+                        F_k = veff_list[k_frag] + H1e_list[k_frag]
 
                         for l_frag in range(k_frag + 1, n_frag):
                             mocc_l = mocc_sum[:, nocc_offsets[l_frag] : nocc_offsets[l_frag + 1]]
-                            F_l = Fock_list[l_frag]
+                            F_l = veff_list[l_frag] + H1e_list[l_frag]
 
                             kl_frag_pair = upper_trinagular_to_pair_index(k_frag, l_frag, n_frag)
                             orbital_hessian_ijkl = cp.zeros([nocc_count[i_frag], nocc_count[j_frag], nocc_count[k_frag], nocc_count[l_frag]])
@@ -311,11 +323,11 @@ def get_eda_electrostatic_energy(mf_list, _make_mf, eda_cache, build_orbital_hes
             conjugate_gradient_initial_guess = cp.zeros(nocc_frag_pair_sum)
             for i_frag in range(n_frag):
                 mocc_i = mocc_sum[:, nocc_offsets[i_frag] : nocc_offsets[i_frag + 1]]
-                F_i = Fock_list[i_frag]
+                F_i = veff_list[i_frag] + H1e_list[i_frag]
 
                 for j_frag in range(i_frag + 1, n_frag):
                     mocc_j = mocc_sum[:, nocc_offsets[j_frag] : nocc_offsets[j_frag + 1]]
-                    F_j = Fock_list[j_frag]
+                    F_j = veff_list[j_frag] + H1e_list[j_frag]
 
                     preconditioner_ii = 2 * mocc_i.T @ (F_j - F_i) @ mocc_i
                     preconditioner_jj = 2 * mocc_j.T @ (F_i - F_j) @ mocc_j
@@ -355,11 +367,11 @@ def get_eda_electrostatic_energy(mf_list, _make_mf, eda_cache, build_orbital_hes
                 y = cp.zeros_like(x)
                 for i_frag in range(n_frag):
                     mocc_i = mocc_sum[:, nocc_offsets[i_frag] : nocc_offsets[i_frag + 1]]
-                    F_i = Fock_list[i_frag]
+                    F_i = veff_list[i_frag] + H1e_list[i_frag]
 
                     for j_frag in range(i_frag + 1, n_frag):
                         mocc_j = mocc_sum[:, nocc_offsets[j_frag] : nocc_offsets[j_frag + 1]]
-                        F_j = Fock_list[j_frag]
+                        F_j = veff_list[j_frag] + H1e_list[j_frag]
 
                         ij_frag_pair = upper_trinagular_to_pair_index(i_frag, j_frag, n_frag)
                         x_ij = x[nocc_frag_pair_offsets[ij_frag_pair] : nocc_frag_pair_offsets[ij_frag_pair + 1]]
@@ -367,11 +379,11 @@ def get_eda_electrostatic_energy(mf_list, _make_mf, eda_cache, build_orbital_hes
 
                         for k_frag in range(0, n_frag):
                             mocc_k = mocc_sum[:, nocc_offsets[k_frag] : nocc_offsets[k_frag + 1]]
-                            F_k = Fock_list[k_frag]
+                            F_k = veff_list[k_frag] + H1e_list[k_frag]
 
                             for l_frag in range(k_frag + 1, n_frag):
                                 mocc_l = mocc_sum[:, nocc_offsets[l_frag] : nocc_offsets[l_frag + 1]]
-                                F_l = Fock_list[l_frag]
+                                F_l = veff_list[l_frag] + H1e_list[l_frag]
 
                                 kl_frag_pair = upper_trinagular_to_pair_index(k_frag, l_frag, n_frag)
                                 y_kl = cp.zeros([nocc_count[k_frag], nocc_count[l_frag]])
@@ -419,7 +431,6 @@ def get_eda_electrostatic_energy(mf_list, _make_mf, eda_cache, build_orbital_hes
                                                  "in EDA orthogonal decomposition not converged!"
             conjugate_gradient_initial_guess = None
 
-        Fock_list = None
         orbital_gradient = None
 
         orbital_rotation = cp.zeros([nocc_sum, nocc_sum])
@@ -438,6 +449,7 @@ def get_eda_electrostatic_energy(mf_list, _make_mf, eda_cache, build_orbital_hes
         U = matrix_exp(orbital_rotation)
         orbital_rotation = None
 
+        mocc_sum_previous = mocc_sum
         mocc_sum = mocc_sum @ U
         U = None
 
@@ -446,7 +458,8 @@ def get_eda_electrostatic_energy(mf_list, _make_mf, eda_cache, build_orbital_hes
         logger.debug(mf_sum, f"EDA electrostatic time: SCF update MO = {time_electrostatic_scf_mo - time_electrostatic_scf_start} s")
 
         energy_previous = energy_sum
-        Fock_list, energy_list = _get_fragment_Fock_and_energy(mf_list, mf_sum, H1e_list, nocc_offsets, mocc_sum)
+        veff_list, energy_list = _get_fragment_veff_and_energy(mf_list, mf_sum, H1e_list, nocc_offsets, mocc_sum,
+                                                               mocc_sum_previous, veff_list)
         energy_sum = float(sum(energy_list))
         delta_energy = energy_sum - energy_previous
         logger.info(mf_sum, f"Cycle {cycle + 1:2d}: energy = {energy_sum}, delta energy = {delta_energy}")
@@ -828,7 +841,8 @@ def get_eda_polarization_energy(mf_list, _make_mf, eda_cache,
     D = get_full_density(mocc_sum_projected, inv_sigma)
 
     H1e = mf_sum.get_hcore()
-    F, energy_sum = _get_total_system_Fock_and_energy(mf_sum, D, H1e)
+    veff, energy_sum = _get_total_system_veff_and_energy(mf_sum, H1e, D)
+    F = H1e + veff
     logger.info(mf_sum, f"Cycle {0:2d}: energy = {energy_sum}")
     energy_frozen = energy_sum
     scf_conv = False
@@ -903,10 +917,12 @@ def get_eda_polarization_energy(mf_list, _make_mf, eda_cache,
 
         sigma = mocc_sum_projected.T @ gamma @ mocc_sum_projected
         inv_sigma = cp.linalg.inv(sigma)
+        D_previous = D
         D = get_full_density(mocc_sum_projected, inv_sigma)
 
         energy_previous = energy_sum
-        F, energy_sum = _get_total_system_Fock_and_energy(mf_sum, D, H1e)
+        veff, energy_sum = _get_total_system_veff_and_energy(mf_sum, H1e, D, D_previous, veff)
+        F = H1e + veff
         delta_energy = energy_sum - energy_previous
         logger.info(mf_sum, f"Cycle {cycle + 1:2d}: energy = {energy_sum}, delta energy = {delta_energy}")
 
