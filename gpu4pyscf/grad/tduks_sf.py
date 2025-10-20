@@ -36,6 +36,7 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
 
     Returns:
         The gradient of excited states: Ei^{\\xi} = E0^{\\xi} + wi^{\\xi}
+    This function is based on https://github.com/pyscf/pyscf-forge/blob/master/pyscf/grad/tduks_sf.py
     '''
     log = logger.new_logger(td_grad, verbose)
     time0 = logger.process_clock(), logger.perf_counter()
