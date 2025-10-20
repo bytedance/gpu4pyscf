@@ -47,6 +47,7 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
     mo_coeff = mf.mo_coeff
     mo_energy = mf.mo_energy
     mo_occ = mf.mo_occ
+    
     occidxa = np.where(mo_occ[0]>0)[0]
     occidxb = np.where(mo_occ[1]>0)[0]
     viridxa = np.where(mo_occ[0]==0)[0]
@@ -177,6 +178,8 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
 
             wvoa -= np.einsum('il,al->ai', veff0mom_ab[:nocca,:noccb], xmy_ab) *2
             wvob -= np.einsum('il,al->ai', veff0mom_ba[:noccb,:nocca], xmy_ba) *2
+    else:
+        raise RuntimeError("Only spin-flip UHF/UKS is supported")
 
     vresp = mf.gen_response(hermi=1)
 
