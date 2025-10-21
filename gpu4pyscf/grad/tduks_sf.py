@@ -65,7 +65,225 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
     nmoa = nocca + nvira
     nmob = noccb + nvirb
 
-    if td_grad.base.extype==0 or 1:
+    # if td_grad.base.extype==0 or 1:
+    #     # x_ab, a means vira, b means occb
+    #     (x_ab, x_ba), (y_ab, y_ba) = x_y
+    #     xpy_ab = (x_ab + y_ab).T
+    #     xpy_ba = (x_ba + y_ba).T
+    #     xmy_ab = (x_ab - y_ab).T
+    #     xmy_ba = (x_ba - y_ba).T
+
+    #     dvv_a = np.einsum('ai,bi->ab', xpy_ab, xpy_ab) + np.einsum('ai,bi->ab', xmy_ab, xmy_ab) # T^{ab \alpha \beta}*2
+    #     dvv_b = np.einsum('ai,bi->ab', xpy_ba, xpy_ba) + np.einsum('ai,bi->ab', xmy_ba, xmy_ba) # T^{ab \beta \alpha}*2
+    #     doo_b =-np.einsum('ai,aj->ij', xpy_ab, xpy_ab) - np.einsum('ai,aj->ij', xmy_ab, xmy_ab) # T^{ij \alpha \beta}*2
+    #     doo_a =-np.einsum('ai,aj->ij', xpy_ba, xpy_ba) - np.einsum('ai,aj->ij', xmy_ba, xmy_ba) # T^{ij \beta \alpha}*2
+
+    #     dmxpy_ab = reduce(np.dot, (orbva, xpy_ab, orbob.T)) # ua ai iv -> uv -> (X+Y)_{uv \alpha \beta}
+    #     dmxpy_ba = reduce(np.dot, (orbvb, xpy_ba, orboa.T)) # ua ai iv -> uv -> (X+Y)_{uv \beta \alpha}
+    #     dmxmy_ab = reduce(np.dot, (orbva, xmy_ab, orbob.T)) # ua ai iv -> uv -> (X-Y)_{uv \alpha \beta}
+    #     dmxmy_ba = reduce(np.dot, (orbvb, xmy_ba, orboa.T)) # ua ai iv -> uv -> (X-Y)_{uv \beta \alpha}
+
+    #     dmzoo_a = reduce(np.dot, (orboa, doo_a, orboa.T)) # \sum_{\sigma ab} 2*Tab \sigma C_{au} C_{bu}
+    #     dmzoo_b = reduce(np.dot, (orbob, doo_b, orbob.T)) # \sum_{\sigma ab} 2*Tij \sigma C_{iu} C_{iu}
+    #     dmzoo_a+= reduce(np.dot, (orbva, dvv_a, orbva.T))
+    #     dmzoo_b+= reduce(np.dot, (orbvb, dvv_b, orbvb.T))
+
+    #     ni = mf._numint
+    #     ni.libxc.test_deriv_order(mf.xc, 3, raise_error=True)
+    #     omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, mol.spin)
+
+    #     # used by mcfun.
+    #     rho0, vxc, fxc = ni.cache_xc_kernel(mf.mol, mf.grids, mf.xc,
+    #                                     mo_coeff, mo_occ, spin=1)
+
+    #     f1vo, f1oo, vxc1, k1ao = \
+    #             _contract_xc_kernel(td_grad, mf.xc, ((dmxpy_ab,dmxpy_ba),(dmxmy_ab,dmxmy_ba)),
+    #                                 (dmzoo_a,dmzoo_b), True, True, max_memory)
+    #     k1ao_xpy, k1ao_xmy = k1ao
+
+    #     # f1vo, (2,2,4,nao,nao), (X+Y) and (X-Y) with fxc_sf
+    #     # f1oo, (2,4,nao,nao), 2T with fxc_sc
+    #     # vxc1, ao with v1^{\sigma}
+    #     # k1ao_xpy，(2,2,4,nao,nao), (X+Y)(X+Y) and (X-Y)(X-Y) with gxc
+
+    #     if abs(hyb) > 1e-10:
+    #         dm = (dmzoo_a, dmxpy_ba+dmxpy_ab.T, dmxmy_ba-dmxmy_ab.T,
+    #               dmzoo_b, dmxpy_ab+dmxpy_ba.T, dmxmy_ab-dmxmy_ba.T)
+    #         vj, vk = mf.get_jk(mol, dm, hermi=0)
+    #         vk *= hyb
+    #         if abs(omega) > 1e-10:
+    #             vk += mf.get_k(mol, dm, hermi=0, omega=omega) * (alpha-hyb)
+    #         vj = vj.reshape(2,3,nao,nao)
+    #         vk = vk.reshape(2,3,nao,nao)
+
+    #         veff0doo = vj[0,0]+vj[1,0] - vk[:,0]+ f1oo[:,0]
+    #         veff0doo[0] += (k1ao_xpy[0,0,0] + k1ao_xpy[0,1,0] + k1ao_xpy[1,0,0] + k1ao_xpy[1,1,0]
+    #                        +k1ao_xmy[0,0,0] + k1ao_xmy[0,1,0] + k1ao_xmy[1,0,0] + k1ao_xmy[1,1,0])
+    #         veff0doo[1] += (k1ao_xpy[0,0,0] + k1ao_xpy[0,1,0] - k1ao_xpy[1,0,0] - k1ao_xpy[1,1,0]
+    #                        +k1ao_xmy[0,0,0] + k1ao_xmy[0,1,0] - k1ao_xmy[1,0,0] - k1ao_xmy[1,1,0])
+
+    #         wvoa = reduce(np.dot, (orbva.T, veff0doo[0], orboa)) *2
+    #         wvob = reduce(np.dot, (orbvb.T, veff0doo[1], orbob)) *2
+
+    #         veff = - vk[:,1] + f1vo[0,:,0]
+    #         veff0mop_ba = reduce(np.dot, (mo_coeff[1].T, veff[0], mo_coeff[0]))
+    #         veff0mop_ab = reduce(np.dot, (mo_coeff[0].T, veff[1], mo_coeff[1]))
+
+    #         wvoa += np.einsum('ca,ci->ai', veff0mop_ba[noccb:,nocca:], xpy_ba) *2
+    #         wvob += np.einsum('ca,ci->ai', veff0mop_ab[nocca:,noccb:], xpy_ab) *2
+
+    #         wvoa -= np.einsum('il,al->ai', veff0mop_ab[:nocca,:noccb], xpy_ab) *2
+    #         wvob -= np.einsum('il,al->ai', veff0mop_ba[:noccb,:nocca], xpy_ba) *2
+
+    #         veff = -vk[:,2] + f1vo[1,:,0]
+    #         veff0mom_ba = reduce(np.dot, (mo_coeff[1].T, veff[0], mo_coeff[0]))
+    #         veff0mom_ab = reduce(np.dot, (mo_coeff[0].T, veff[1], mo_coeff[1]))
+
+    #         wvoa += np.einsum('ca,ci->ai', veff0mom_ba[noccb:,nocca:], xmy_ba) *2
+    #         wvob += np.einsum('ca,ci->ai', veff0mom_ab[nocca:,noccb:], xmy_ab) *2
+
+    #         wvoa -= np.einsum('il,al->ai', veff0mom_ab[:nocca,:noccb], xmy_ab) *2
+    #         wvob -= np.einsum('il,al->ai', veff0mom_ba[:noccb,:nocca], xmy_ba) *2
+
+    #     else:
+    #         dm = (dmzoo_a, dmxpy_ba+dmxpy_ab.T, dmxmy_ba-dmxmy_ab.T,
+    #               dmzoo_b, dmxpy_ab+dmxpy_ba.T, dmxmy_ab-dmxmy_ba.T)
+    #         vj = mf.get_j(mol, dm, hermi=0).reshape(2,3,nao,nao)
+
+    #         veff0doo = vj[0,0]+vj[1,0] + f1oo[:,0]
+    #         veff0doo[0] += (k1ao_xpy[0,0,0] + k1ao_xpy[0,1,0] + k1ao_xpy[1,0,0] + k1ao_xpy[1,1,0]
+    #                        +k1ao_xmy[0,0,0] + k1ao_xmy[0,1,0] + k1ao_xmy[1,0,0] + k1ao_xmy[1,1,0])
+    #         veff0doo[1] += (k1ao_xpy[0,0,0] + k1ao_xpy[0,1,0] - k1ao_xpy[1,0,0] - k1ao_xpy[1,1,0]
+    #                        +k1ao_xmy[0,0,0] + k1ao_xmy[0,1,0] - k1ao_xmy[1,0,0] - k1ao_xmy[1,1,0])
+
+    #         wvoa = reduce(np.dot, (orbva.T, veff0doo[0], orboa)) *2
+    #         wvob = reduce(np.dot, (orbvb.T, veff0doo[1], orbob)) *2
+
+    #         veff = f1vo[0,:,0]
+    #         veff0mop_ba = reduce(np.dot, (mo_coeff[1].T, veff[0], mo_coeff[0]))
+    #         veff0mop_ab = reduce(np.dot, (mo_coeff[0].T, veff[1], mo_coeff[1]))
+
+    #         wvoa += np.einsum('ca,ci->ai', veff0mop_ba[noccb:,nocca:], xpy_ba) *2
+    #         wvob += np.einsum('ca,ci->ai', veff0mop_ab[nocca:,noccb:], xpy_ab) *2
+
+    #         wvoa -= np.einsum('il,al->ai', veff0mop_ab[:nocca,:noccb], xpy_ab) *2
+    #         wvob -= np.einsum('il,al->ai', veff0mop_ba[:noccb,:nocca], xpy_ba) *2
+
+    #         veff = f1vo[1,:,0]
+    #         veff0mom_ba = reduce(np.dot, (mo_coeff[1].T, veff[0], mo_coeff[0]))
+    #         veff0mom_ab = reduce(np.dot, (mo_coeff[0].T, veff[1], mo_coeff[1]))
+
+    #         wvoa += np.einsum('ca,ci->ai', veff0mom_ba[noccb:,nocca:], xmy_ba) *2
+    #         wvob += np.einsum('ca,ci->ai', veff0mom_ab[nocca:,noccb:], xmy_ab) *2
+
+    #         wvoa -= np.einsum('il,al->ai', veff0mom_ab[:nocca,:noccb], xmy_ab) *2
+    #         wvob -= np.einsum('il,al->ai', veff0mom_ba[:noccb,:nocca], xmy_ba) *2
+    if td_grad.base.extype ==  0: # spin-flip-up
+        # x_ab, a means vira, b means occb
+        (x_ab, x_ba), (y_ab, y_ba) = x_y
+        xpy_ab = (x_ab + y_ab).T
+        xmy_ab = (x_ab - y_ab).T
+
+        dvv_a = np.einsum('ai,bi->ab', xpy_ab, xpy_ab) + np.einsum('ai,bi->ab', xmy_ab, xmy_ab) # T^{ab \alpha \beta}*2
+        doo_b =-np.einsum('ai,aj->ij', xpy_ab, xpy_ab) - np.einsum('ai,aj->ij', xmy_ab, xmy_ab) # T^{ij \alpha \beta}*2
+
+        dmxpy_ab = reduce(np.dot, (orbva, xpy_ab, orbob.T)) # ua ai iv -> uv -> (X+Y)_{uv \alpha \beta}
+        dmxmy_ab = reduce(np.dot, (orbva, xmy_ab, orbob.T)) # ua ai iv -> uv -> (X-Y)_{uv \alpha \beta}
+
+        dmzoo_b = reduce(np.dot, (orbob, doo_b, orbob.T)) # \sum_{\sigma ab} 2*Tij \sigma C_{iu} C_{iu}
+        dmzoo_a+= reduce(np.dot, (orbva, dvv_a, orbva.T))
+
+        ni = mf._numint
+        ni.libxc.test_deriv_order(mf.xc, 3, raise_error=True)
+        omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, mol.spin)
+
+        # used by mcfun.
+        rho0, vxc, fxc = ni.cache_xc_kernel(mf.mol, mf.grids, mf.xc,
+                                        mo_coeff, mo_occ, spin=1)
+
+        f1vo, f1oo, vxc1, k1ao = \
+                _contract_xc_kernel(td_grad, mf.xc, ((dmxpy_ab,dmxpy_ba),(dmxmy_ab,dmxmy_ba)),
+                                    (dmzoo_a,dmzoo_b), True, True, max_memory)
+        k1ao_xpy, k1ao_xmy = k1ao
+
+        # f1vo, (2,2,4,nao,nao), (X+Y) and (X-Y) with fxc_sf
+        # f1oo, (2,4,nao,nao), 2T with fxc_sc
+        # vxc1, ao with v1^{\sigma}
+        # k1ao_xpy，(2,2,4,nao,nao), (X+Y)(X+Y) and (X-Y)(X-Y) with gxc
+
+        if abs(hyb) > 1e-10:
+            dm = (dmzoo_a, dmxpy_ba+dmxpy_ab.T, dmxmy_ba-dmxmy_ab.T,
+                  dmzoo_b, dmxpy_ab+dmxpy_ba.T, dmxmy_ab-dmxmy_ba.T)
+            vj, vk = mf.get_jk(mol, dm, hermi=0)
+            vk *= hyb
+            if abs(omega) > 1e-10:
+                vk += mf.get_k(mol, dm, hermi=0, omega=omega) * (alpha-hyb)
+            vj = vj.reshape(2,3,nao,nao)
+            vk = vk.reshape(2,3,nao,nao)
+
+            veff0doo = vj[0,0]+vj[1,0] - vk[:,0]+ f1oo[:,0]
+            veff0doo[0] += (k1ao_xpy[0,0,0] + k1ao_xpy[0,1,0] + k1ao_xpy[1,0,0] + k1ao_xpy[1,1,0]
+                           +k1ao_xmy[0,0,0] + k1ao_xmy[0,1,0] + k1ao_xmy[1,0,0] + k1ao_xmy[1,1,0])
+            veff0doo[1] += (k1ao_xpy[0,0,0] + k1ao_xpy[0,1,0] - k1ao_xpy[1,0,0] - k1ao_xpy[1,1,0]
+                           +k1ao_xmy[0,0,0] + k1ao_xmy[0,1,0] - k1ao_xmy[1,0,0] - k1ao_xmy[1,1,0])
+
+            wvoa = reduce(np.dot, (orbva.T, veff0doo[0], orboa)) *2
+            wvob = reduce(np.dot, (orbvb.T, veff0doo[1], orbob)) *2
+
+            veff = - vk[:,1] + f1vo[0,:,0]
+            veff0mop_ba = reduce(np.dot, (mo_coeff[1].T, veff[0], mo_coeff[0]))
+            veff0mop_ab = reduce(np.dot, (mo_coeff[0].T, veff[1], mo_coeff[1]))
+
+            wvoa += np.einsum('ca,ci->ai', veff0mop_ba[noccb:,nocca:], xpy_ba) *2
+            wvob += np.einsum('ca,ci->ai', veff0mop_ab[nocca:,noccb:], xpy_ab) *2
+
+            wvoa -= np.einsum('il,al->ai', veff0mop_ab[:nocca,:noccb], xpy_ab) *2
+            wvob -= np.einsum('il,al->ai', veff0mop_ba[:noccb,:nocca], xpy_ba) *2
+
+            veff = -vk[:,2] + f1vo[1,:,0]
+            veff0mom_ba = reduce(np.dot, (mo_coeff[1].T, veff[0], mo_coeff[0]))
+            veff0mom_ab = reduce(np.dot, (mo_coeff[0].T, veff[1], mo_coeff[1]))
+
+            wvoa += np.einsum('ca,ci->ai', veff0mom_ba[noccb:,nocca:], xmy_ba) *2
+            wvob += np.einsum('ca,ci->ai', veff0mom_ab[nocca:,noccb:], xmy_ab) *2
+
+            wvoa -= np.einsum('il,al->ai', veff0mom_ab[:nocca,:noccb], xmy_ab) *2
+            wvob -= np.einsum('il,al->ai', veff0mom_ba[:noccb,:nocca], xmy_ba) *2
+
+        else:
+            dm = (dmzoo_a, dmxpy_ba+dmxpy_ab.T, dmxmy_ba-dmxmy_ab.T,
+                  dmzoo_b, dmxpy_ab+dmxpy_ba.T, dmxmy_ab-dmxmy_ba.T)
+            vj = mf.get_j(mol, dm, hermi=0).reshape(2,3,nao,nao)
+
+            veff0doo = vj[0,0]+vj[1,0] + f1oo[:,0]
+            veff0doo[0] += (k1ao_xpy[0,0,0] + k1ao_xpy[0,1,0] + k1ao_xpy[1,0,0] + k1ao_xpy[1,1,0]
+                           +k1ao_xmy[0,0,0] + k1ao_xmy[0,1,0] + k1ao_xmy[1,0,0] + k1ao_xmy[1,1,0])
+            veff0doo[1] += (k1ao_xpy[0,0,0] + k1ao_xpy[0,1,0] - k1ao_xpy[1,0,0] - k1ao_xpy[1,1,0]
+                           +k1ao_xmy[0,0,0] + k1ao_xmy[0,1,0] - k1ao_xmy[1,0,0] - k1ao_xmy[1,1,0])
+
+            wvoa = reduce(np.dot, (orbva.T, veff0doo[0], orboa)) *2
+            wvob = reduce(np.dot, (orbvb.T, veff0doo[1], orbob)) *2
+
+            veff = f1vo[0,:,0]
+            veff0mop_ba = reduce(np.dot, (mo_coeff[1].T, veff[0], mo_coeff[0]))
+            veff0mop_ab = reduce(np.dot, (mo_coeff[0].T, veff[1], mo_coeff[1]))
+
+            wvoa += np.einsum('ca,ci->ai', veff0mop_ba[noccb:,nocca:], xpy_ba) *2
+            wvob += np.einsum('ca,ci->ai', veff0mop_ab[nocca:,noccb:], xpy_ab) *2
+
+            wvoa -= np.einsum('il,al->ai', veff0mop_ab[:nocca,:noccb], xpy_ab) *2
+            wvob -= np.einsum('il,al->ai', veff0mop_ba[:noccb,:nocca], xpy_ba) *2
+
+            veff = f1vo[1,:,0]
+            veff0mom_ba = reduce(np.dot, (mo_coeff[1].T, veff[0], mo_coeff[0]))
+            veff0mom_ab = reduce(np.dot, (mo_coeff[0].T, veff[1], mo_coeff[1]))
+
+            wvoa += np.einsum('ca,ci->ai', veff0mom_ba[noccb:,nocca:], xmy_ba) *2
+            wvob += np.einsum('ca,ci->ai', veff0mom_ab[nocca:,noccb:], xmy_ab) *2
+
+            wvoa -= np.einsum('il,al->ai', veff0mom_ab[:nocca,:noccb], xmy_ab) *2
+            wvob -= np.einsum('il,al->ai', veff0mom_ba[:noccb,:nocca], xmy_ba) *2
+    elif td_grad.base.extype == 1: # spin-flip-down
         # x_ab, a means vira, b means occb
         (x_ab, x_ba), (y_ab, y_ba) = x_y
         xpy_ab = (x_ab + y_ab).T
