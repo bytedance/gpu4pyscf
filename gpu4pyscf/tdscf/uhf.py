@@ -1022,6 +1022,13 @@ class SpinFlipTDA(TDBase):
         return get_ab_sf(mf, mo_energy=mo_energy, mo_coeff=mo_coeff, mo_occ=mo_occ, 
             collinear=collinear, collinear_samples=collinear_samples)
 
+    def Gradients(self):
+        if getattr(self._scf, 'with_df', None):
+            raise NotImplementedError('DFT TD-SCF gradients are not implemented')
+        else:
+            from gpu4pyscf.grad import tduks_sf
+            return tduks_sf.Gradients(self)
+
 
 def gen_tdhf_operation(td, mf, fock_ao=None, singlet=True, wfnsym=None):
     '''Generate function to compute
