@@ -361,68 +361,38 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
     if mol.has_ecp():
         dh1e_td += rhf_grad.get_dh1e_ecp(
             mol, (dmz1dooa + dmz1doob) * 0.25 + (dmz1dooa + dmz1doob).T * 0.25)  # 1/r like terms
-
+    if atmlst is None:
+        atmlst = range(mol.natm)
+    dvhf_all = 0
+    j_factor = 1.0
+    k_factor = 0.0
+    with_k = ni.libxc.is_hybrid_xc(mf.xc)
+    if with_k:
+        k_factor = hyb
+    dvhf = td_grad.get_veff(mol, cp.stack(((dmz1dooa + dmz1dooa.T) * 0.25 + oo0a,
+                                           (dmz1doob + dmz1doob.T) * 0.25 + oo0b,)), j_factor, k_factor)
+    dvhf_all += dvhf
+    dvhf = td_grad.get_veff(mol, cp.stack(((dmz1dooa + dmz1dooa.T), (dmz1doob + dmz1doob.T))) * 0.25,
+        j_factor, k_factor)
+    dvhf_all -= dvhf
     if td_grad.base.extype == 0:
-        if abs(hyb) > 1e-10:
-            dm = (oo0a.get(), (dmz1dooa+dmz1dooa.T).get(), dmxpy_ab.T.get(), -dmxmy_ab.T.get(),
-                oo0b.get(), (dmz1doob+dmz1doob.T).get(), dmxpy_ab.get(), dmxmy_ab.get())
-            vj, vk = mf_grad.get_jk(mol, dm)
-            if not isinstance(vj, cp.ndarray):
-                vj = cp.asarray(vj)
-            if not isinstance(vk, cp.ndarray):
-                vk = cp.asarray(vk)
-            vj = vj.reshape(2,4,3,nao,nao)
-            vk = vk.reshape(2,4,3,nao,nao) * hyb
-            vj[:,2:4] *= 0.0
-            if abs(omega) > 1e-10:
-                with mol.with_range_coulomb(omega):
-                    vk += mf_grad.get_k(mol, dm).reshape(2,4,3,nao,nao) * (alpha-hyb)
-                    if not isinstance(vk, cp.ndarray):
-                        vk = cp.asarray(vk)
+        dvhf = td_grad.get_veff(mol, cp.stack(((dmxpy_ab + dmxpy_ab.T), (dmxpy_ab + dmxpy_ab.T))) * 0.5,
+            0.0, k_factor)
+        dvhf_all += dvhf * 1
+        dvhf = td_grad.get_veff(mol, cp.stack(((dmxmy_ab - dmxmy_ab.T), (dmxmy_ab - dmxmy_ab.T))) * 0.5,
+                j_factor=0.0, k_factor=k_factor, hermi=2)
+        dvhf_all += dvhf * 1
 
-            veff1 = cp.zeros((2,4,3,nao,nao))
-            veff1[:,:2] = vj[0,:2] + vj[1,:2] - vk[:,:2]
-        else:
-            dm = (oo0a.get(), (dmz1dooa+dmz1dooa.T).get(), dmxpy_ab.T.get(),
-                oo0b.get(), (dmz1doob+dmz1doob.T).get(), dmxpy_ab)
-            vj = mf_grad.get_j(mol, dm).reshape(2,3,3,nao,nao)
-            if not isinstance(vj, cp.ndarray):
-                vj = cp.asarray(vj)
-            vj[:,2] *= 0.0
-            veff1 = cp.zeros((2,4,3,nao,nao))
-            veff1[:,:3] = vj[0] + vj[1]
     elif td_grad.base.extype == 1:
-        if abs(hyb) > 1e-10:
-            dm = (oo0a.get(), (dmz1dooa+dmz1dooa.T).get(), dmxpy_ba.get(), dmxmy_ba.get(),
-                oo0b.get(), (dmz1doob+dmz1doob.T).get(), dmxpy_ba.T.get(), -dmxmy_ba.T.get())
-            vj, vk = mf_grad.get_jk(mol, dm)
-            if not isinstance(vj, cp.ndarray):
-                vj = cp.asarray(vj)
-            if not isinstance(vk, cp.ndarray):
-                vk = cp.asarray(vk)
-            vj = vj.reshape(2,4,3,nao,nao)
-            vk = vk.reshape(2,4,3,nao,nao) * hyb
-            vj[:,2:4] *= 0.0
-            if abs(omega) > 1e-10:
-                with mol.with_range_coulomb(omega):
-                    vk += mf_grad.get_k(mol, dm).reshape(2,4,3,nao,nao) * (alpha-hyb)
-                    if not isinstance(vk, cp.ndarray):
-                        vk = cp.asarray(vk)
-
-            veff1 = cp.zeros((2,4,3,nao,nao))
-            veff1[:,:2] = vj[0,:2] + vj[1,:2] - vk[:,:2]
-        else:
-            dm = (oo0a.get(), (dmz1dooa+dmz1dooa.T).get(), dmxpy_ba.get(),
-                oo0b.get(), (dmz1doob+dmz1doob.T).get(), dmxpy_ba.T.get())
-            vj = mf_grad.get_j(mol, dm).reshape(2,3,3,nao,nao)
-            if not isinstance(vj, cp.ndarray):
-                vj = cp.asarray(vj)
-            vj[:,2] *= 0.0
-            veff1 = cp.zeros((2,4,3,nao,nao))
-            veff1[:,:3] = vj[0] + vj[1]
+        dvhf = td_grad.get_veff(mol, cp.stack(((dmxpy_ba + dmxpy_ba.T), (dmxpy_ba.T + dmxpy_ba))) * 0.5,
+            0.0, k_factor)
+        dvhf_all += dvhf * 1
+        dvhf = td_grad.get_veff(mol, cp.stack(((dmxmy_ba - dmxmy_ba.T), (-dmxmy_ba.T + dmxmy_ba))) * 0.5,
+                j_factor=0.0, k_factor=k_factor, hermi=2)
+        dvhf_all += dvhf * 1
 
     fxcz1 = _contract_xc_kernel_z(td_grad, mf.xc, z1ao, max_memory)
-
+    veff1 = cp.zeros((2,4,3,nao,nao))
     veff1[:,0] += vxc1[:,1:]
     veff1[:,1] += (f1oo[:,1:] + fxcz1[:,1:])*2
     veff1[0,1] += (k1ao_xpy[0,0,1:] + k1ao_xpy[0,1,1:] + k1ao_xpy[1,0,1:] + k1ao_xpy[1,1,1:]
@@ -442,51 +412,55 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
     delec = 2.0 * (dh_ground + dh_td - ds)
     aoslices = mol.aoslice_by_atom()
     delec = cp.asarray([cp.sum(delec[:, p0:p1], axis=1) for p0, p1 in aoslices[:, 2:]])
-    de += delec + dh1e_ground + dh1e_td
-    for k, ia in enumerate(atmlst):
-        shl0, shl1, p0, p1 = offsetdic[ia]
 
-        # Ground state gradients
-        de[k] += cp.einsum('xpq,pq->x', veff1a[0,:,p0:p1], oo0a[p0:p1])
-        de[k] += cp.einsum('xpq,pq->x', veff1b[0,:,p0:p1], oo0b[p0:p1])
-        de[k] += cp.einsum('xpq,qp->x', veff1a[0,:,p0:p1], oo0a[:,p0:p1])
-        de[k] += cp.einsum('xpq,qp->x', veff1b[0,:,p0:p1], oo0b[:,p0:p1])
+    deveff0 = cp.asarray(
+    [contract("xpq,pq->x", veff1a[0,:,p0:p1], oo0a[p0:p1] + dmz1dooa[p0:p1] * 0.5)
+     for p0, p1 in aoslices[:, 2:]])
+    deveff0 += cp.asarray(
+        [contract("xpq,pq->x", veff1b[0,:,p0:p1], oo0b[p0:p1] + dmz1doob[p0:p1] * 0.5)
+        for p0, p1 in aoslices[:, 2:]])
+    deveff0 += cp.asarray(
+        [contract("xpq,qp->x", veff1a[0,:,p0:p1], oo0a[:,p0:p1] + dmz1dooa[:,p0:p1] * 0.5)
+        for p0, p1 in aoslices[:, 2:]])
+    deveff0 += cp.asarray(
+        [contract("xpq,qp->x", veff1b[0,:,p0:p1], oo0b[:,p0:p1] + dmz1doob[:,p0:p1] * 0.5)
+        for p0, p1 in aoslices[:, 2:]])
 
-        de[k] += cp.einsum('xpq,pq->x', veff1a[0,:,p0:p1], dmz1dooa[p0:p1]) *.5
-        de[k] += cp.einsum('xpq,pq->x', veff1b[0,:,p0:p1], dmz1doob[p0:p1]) *.5
-        de[k] += cp.einsum('xpq,qp->x', veff1a[0,:,p0:p1], dmz1dooa[:,p0:p1]) *.5
-        de[k] += cp.einsum('xpq,qp->x', veff1b[0,:,p0:p1], dmz1doob[:,p0:p1]) *.5
+    deveff1 = cp.asarray(
+        [contract("xpq,pq->x", veff1a[1,:,p0:p1], oo0a[p0:p1] * 0.5)
+        for p0, p1 in aoslices[:, 2:]])
+    deveff1 += cp.asarray(
+        [contract("xpq,pq->x", veff1b[1,:,p0:p1], oo0b[p0:p1] * 0.5)
+        for p0, p1 in aoslices[:, 2:]])
 
-        de[k] += cp.einsum('xij,ij->x', veff1a[1,:,p0:p1], oo0a[p0:p1]) *0.5
-        de[k] += cp.einsum('xij,ij->x', veff1b[1,:,p0:p1], oo0b[p0:p1]) *0.5
+    if td_grad.base.extype == 0:
+        deveff2 = cp.asarray(
+            [contract('xpq,pq->x', veff1b[2,:,p0:p1], dmxpy_ab[p0:p1,:])
+            for p0, p1 in aoslices[:, 2:]])
+        deveff2 += cp.asarray(
+            [contract('xqp,pq->x', veff1b[2,:,p0:p1], dmxpy_ab[:,p0:p1])  
+            for p0, p1 in aoslices[:, 2:]])
+        deveff3 = cp.asarray(
+            [contract('xpq,pq->x', veff1b[3,:,p0:p1], dmxmy_ab[p0:p1,:])
+            for p0, p1 in aoslices[:, 2:]])
+        deveff3 += cp.asarray(
+            [contract('xqp,pq->x', veff1b[3,:,p0:p1], dmxmy_ab[:,p0:p1])  
+            for p0, p1 in aoslices[:, 2:]])
+    elif td_grad.base.extype == 1:
+        deveff2 = cp.asarray(
+            [contract('xpq,pq->x', veff1a[2,:,p0:p1], dmxpy_ba[p0:p1,:])
+            for p0, p1 in aoslices[:, 2:]])
+        deveff2 += cp.asarray(
+            [contract('xqp,pq->x', veff1a[2,:,p0:p1], dmxpy_ba[:,p0:p1])  
+            for p0, p1 in aoslices[:, 2:]])
+        deveff3 = cp.asarray(
+            [contract('xpq,pq->x', veff1a[3,:,p0:p1], dmxmy_ba[p0:p1,:])
+            for p0, p1 in aoslices[:, 2:]])
+        deveff3 += cp.asarray(
+            [contract('xqp,pq->x', veff1a[3,:,p0:p1], dmxmy_ba[:,p0:p1])  
+            for p0, p1 in aoslices[:, 2:]])
 
-        if td_grad.base.extype == 0:
-            de[k] += cp.einsum('xij,ij->x', veff1b[2,:,p0:p1], dmxpy_ab[p0:p1,:])
-            de[k] += cp.einsum('xji,ij->x', veff1b[2,:,p0:p1], dmxpy_ab[:,p0:p1])
-
-            de[k] += cp.einsum('xij,ij->x', veff1b[3,:,p0:p1], dmxmy_ab[p0:p1,:])
-            de[k] += cp.einsum('xji,ij->x', veff1b[3,:,p0:p1], dmxmy_ab[:,p0:p1])
-
-            if abs(hyb) > 1e-10:
-                de[k] -= cp.einsum('xij,ij->x', vk[1,2,:,p0:p1], dmxpy_ab[p0:p1,:])
-                de[k] -= cp.einsum('xji,ij->x', vk[0,2,:,p0:p1], dmxpy_ab[:,p0:p1])
-
-                de[k] -= cp.einsum('xij,ij->x', vk[1,3,:,p0:p1], dmxmy_ab[p0:p1,:])
-                de[k] += cp.einsum('xji,ij->x', vk[0,3,:,p0:p1], dmxmy_ab[:,p0:p1])
-        elif td_grad.base.extype == 1:
-            de[k] += cp.einsum('xij,ij->x', veff1a[2,:,p0:p1], dmxpy_ba[p0:p1,:])
-            de[k] += cp.einsum('xji,ij->x', veff1a[2,:,p0:p1], dmxpy_ba[:,p0:p1])
-
-            de[k] += cp.einsum('xij,ij->x', veff1a[3,:,p0:p1], dmxmy_ba[p0:p1,:])
-            de[k] += cp.einsum('xji,ij->x', veff1a[3,:,p0:p1], dmxmy_ba[:,p0:p1])
-
-            if abs(hyb) > 1e-10:
-                de[k] -= cp.einsum('xij,ij->x', vk[0,2,:,p0:p1], dmxpy_ba[p0:p1,:])
-                de[k] -= cp.einsum('xji,ij->x', vk[1,2,:,p0:p1], dmxpy_ba[:,p0:p1])
-
-                de[k] -= cp.einsum('xij,ij->x', vk[0,3,:,p0:p1], dmxmy_ba[p0:p1,:])
-                de[k] += cp.einsum('xji,ij->x', vk[1,3,:,p0:p1], dmxmy_ba[:,p0:p1])
-
+    de += 2.0 * dvhf_all + delec + dh1e_ground + dh1e_td + deveff0 + deveff1 + deveff2 + deveff3
     log.timer('TDUKS nuclear gradients', *time0)
     return de.get()
 
