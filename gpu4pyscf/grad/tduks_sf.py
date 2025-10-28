@@ -28,9 +28,10 @@ from gpu4pyscf.tdscf._uhf_resp_sf import cache_xc_kernel_sf, mcfun_eval_xc_adapt
 from gpu4pyscf.grad import tdrks
 
 
+# TODO: meta-GGA should be supported.
 def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
-    ''' Spin flip TDDFT gradient in UKS framework. Note: This function supports
-    both TDA or TDDFT results.
+    ''' Spin flip TDA gradient in UKS framework. Note: This function supports
+    both TDA or TDA results.
 
     Parameters
     ----------
@@ -123,7 +124,11 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
             
         vk *= hyb
         if abs(omega) > 1e-10:
-            vk += mf.get_k(mol, dm, hermi=0, omega=omega) * (alpha-hyb)
+            vk_omega = mf.get_k(mol, dm, hermi=0, omega=omega) * (alpha-hyb)
+            if not isinstance(vk_omega, cp.ndarray):
+                vk_omega = cp.asarray(vk_omega)
+            vk += vk_omega
+            vk_omega = None
         vj = vj.reshape(2,3,nao,nao)
         vk = vk.reshape(2,3,nao,nao)
 
@@ -166,6 +171,8 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
             dm = (dmzoo_a, dmx, dmx,
                 dmzoo_b, dmx.T, -dmx.T)
         vj = mf.get_j(mol, dm, hermi=0).reshape(2,3,nao,nao)
+        if not isinstance(vj, cp.ndarray):
+            vj = cp.asarray(vj)
 
         veff0doo = vj[0,0]+vj[1,0] + f1oo[:,0]
         veff0doo[0] += (k1ao[0,0,0] + k1ao[0,1,0] + k1ao[1,0,0] + k1ao[1,1,0]
@@ -324,6 +331,31 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
                 j_factor=0.0, k_factor=k_factor, hermi=2)
         dvhf_all += dvhf * 1
 
+    if with_k and omega != 0:
+        j_factor = 0.0
+        k_factor = alpha-hyb  # =beta
+        dvhf = td_grad.get_veff(mol, cp.stack(((dmz1dooa + dmz1dooa.T) * 0.25 + oo0a,
+                                           (dmz1doob + dmz1doob.T) * 0.25 + oo0b,)), j_factor, k_factor, omega=omega)
+        dvhf_all += dvhf
+        dvhf = td_grad.get_veff(mol, cp.stack(((dmz1dooa + dmz1dooa.T), (dmz1doob + dmz1doob.T))) * 0.25,
+            j_factor, k_factor, omega=omega)
+        dvhf_all -= dvhf
+        if td_grad.base.extype == 0:
+            dvhf = td_grad.get_veff(mol, cp.stack(((dmx + dmx.T), (dmx + dmx.T))) * 0.5,
+                0.0, k_factor, omega=omega)
+            dvhf_all += dvhf * 1
+            dvhf = td_grad.get_veff(mol, cp.stack(((dmx - dmx.T), (dmx - dmx.T))) * 0.5,
+                    j_factor=0.0, k_factor=k_factor, hermi=2, omega=omega)
+            dvhf_all += dvhf * 1
+
+        elif td_grad.base.extype == 1:
+            dvhf = td_grad.get_veff(mol, cp.stack(((dmx + dmx.T), (dmx.T + dmx))) * 0.5,
+                0.0, k_factor, omega=omega)
+            dvhf_all += dvhf * 1
+            dvhf = td_grad.get_veff(mol, cp.stack(((dmx - dmx.T), (-dmx.T + dmx))) * 0.5,
+                    j_factor=0.0, k_factor=k_factor, hermi=2, omega=omega)
+            dvhf_all += dvhf * 1
+
     fxcz1 = _contract_xc_kernel_z(td_grad, mf.xc, z1ao, max_memory)
     veff1 = cp.zeros((2,4,3,nao,nao))
     veff1[:,0] += vxc1[:,1:]
@@ -395,8 +427,6 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
 
     de += 2.0 * dvhf_all + delec + dh1e_ground + dh1e_td + deveff0 + deveff1 + deveff2 + deveff3
     log.timer('TDUKS nuclear gradients', *time0)
-    print("de")
-    print(de)
     return de.get()
 
 def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
@@ -450,7 +480,7 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
         fmat_, ao_deriv = _gga_eval_mat_, 2
     elif xctype == "MGGA":
         raise NotImplementedError("MGGA is not supported")
-
+    # TODO: LDA, GGA and meta-GGA can be gathered together
     if xctype == 'LDA':
         for ao, mask, weight, coords \
                 in ni.block_loop(_sorted_mol, grids, nao, ao_deriv):
@@ -462,9 +492,9 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
             dmvo0_mask = dmvo0[mask[:, None], mask]
             with_lapl = False
 
-            rhoa_slice = ni.eval_rho2(_sorted_mol, ao, mo_coeff_mask_a,
+            rhoa_slice = ni.eval_rho2(_sorted_mol, ao[0], mo_coeff_mask_a,
                                 mo_occ[0], None, xctype, with_lapl)
-            rhob_slice = ni.eval_rho2(_sorted_mol, ao, mo_coeff_mask_b,
+            rhob_slice = ni.eval_rho2(_sorted_mol, ao[0], mo_coeff_mask_b,
                                 mo_occ[1], None, xctype, with_lapl)
             rho_ab = (rhoa_slice, rhob_slice)
             rho_z = cp.array([rho_ab[0]+rho_ab[1],
@@ -475,7 +505,7 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
 
             rho1 = ni.eval_rho(_sorted_mol, ao[0], dmvo0_mask, mask, xctype)
             f_val = rho1 * s_s * 2  # s_s*2 because of \sigma_x \sigma_x + \sigma_y \sigma_y
-            
+            f_val = f_val[0]
             fmat_(_sorted_mol, f1vo[0][1], ao, f_val, mask, shls_slice, ao_loc)
             fmat_(_sorted_mol, f1vo[0][0], ao, f_val, mask, shls_slice, ao_loc)
             
@@ -496,28 +526,33 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
                 s_s_s = kxc_sf[:,:,1] * weight
                 k_val_n = s_s_n * 2 * rho1 * rho1
                 k_val_s = s_s_s * 2 * rho1 * rho1
+                k_val_n = k_val_n[0,0]
+                k_val_s = k_val_s[0,0]
                 fmat_(_sorted_mol, k1ao[0][k_idx], ao, k_val_n, mask, shls_slice, ao_loc)
                 fmat_(_sorted_mol, k1ao[1][k_idx], ao, k_val_s, mask, shls_slice, ao_loc)
 
-            rho = (ni.eval_rho2(_sorted_mol, ao[0],mo_coeff_mask_a, mo_occ[0], mask, xctype),
-                ni.eval_rho2(_sorted_mol, ao[0], mo_coeff_mask_b, mo_occ[1], mask, xctype))
+            rho = cp.array((ni.eval_rho2(_sorted_mol, ao[0], mo_coeff_mask_a, mo_occ[0], mask, xctype),
+                            ni.eval_rho2(_sorted_mol, ao[0], mo_coeff_mask_b, mo_occ[1], mask, xctype)))
             vxc, fxc, kxc = ni.eval_xc_eff(xc_code, rho, deriv=deriv, spin=1)[1:]
-            u_u, u_d, d_d = fxc[0].T * weight
             if dmoo is not None:
                 dmoo0_mask = dmoo0[mask[:, None], mask]
                 dmoo1_mask = dmoo1[mask[:, None], mask]
-                rho2a = ni.eval_rho(_sorted_mol, ao[0], dmoo0_mask, mask, xctype, hermi=1)
-                rho2b = ni.eval_rho(_sorted_mol, ao[0], dmoo1_mask, mask, xctype, hermi=1)
-                fmat_(_sorted_mol, f1oo[0], ao, u_u*rho2a+u_d*rho2b, mask, shls_slice, ao_loc)
-                fmat_(_sorted_mol, f1oo[1], ao, u_d*rho2a+d_d*rho2b, mask, shls_slice, ao_loc)
+                rho2 = cp.array((ni.eval_rho(_sorted_mol, ao[0], dmoo0_mask, mask, xctype, hermi=1),
+                                 ni.eval_rho(_sorted_mol, ao[0], dmoo1_mask, mask, xctype, hermi=1)))
+                rho2 = rho2[:, cp.newaxis].copy()
+                tmp = contract("axg,axbyg->byg", rho2, fxc)
+                wv = contract("byg,g->byg", tmp, weight)
+                tmp = None
+                fmat_(_sorted_mol, f1oo[0], ao, wv[0], mask, shls_slice, ao_loc)
+                fmat_(_sorted_mol, f1oo[1], ao, wv[1], mask, shls_slice, ao_loc)
             if with_vxc:
-                vrho = vxc[0].T * weight
+                vrho = vxc * weight
                 fmat_(_sorted_mol, v1ao[0], ao, vrho[0], mask, shls_slice, ao_loc)
                 fmat_(_sorted_mol, v1ao[1], ao, vrho[1], mask, shls_slice, ao_loc)
 
     elif xctype == 'GGA':
         for ao, mask, weight, coords \
-                in ni.block_loop(_sorted_mol, grids, nao, ao_deriv, max_memory):
+                in ni.block_loop(_sorted_mol, grids, nao, ao_deriv):
             p0 = p1
             p1+= weight.shape[0]
 
@@ -607,6 +642,7 @@ def _gga_eval_mat_(mol, vmat, ao, wv, mask, shls_slice, ao_loc):
     add_sparse(vmat[1:], vtmp, mask)
     return vmat
 
+
 def uks_sf_gga_wv1(rho1, fxc_sf, weight):
     # fxc_sf with a shape (4,4,ngrid), 4 means I, \nabla_x,y,z.
     ngrid = weight.shape[-1]
@@ -676,15 +712,17 @@ def _contract_xc_kernel_z(td_grad, xc_code, dmvo, max_memory=2000):
             mo_coeff_mask_b = mo_coeff[1, mask]
             dmvo0_mask = dmvo0[mask[:, None], mask]
             dmvo1_mask = dmvo1[mask[:, None], mask]
-            rho = (ni.eval_rho2(_sorted_mol, ao[0], mo_coeff_mask_a, mo_occ[0], mask, xctype),
-                   ni.eval_rho2(_sorted_mol, ao[0], mo_coeff_mask_b, mo_occ[1], mask, xctype))
+            rho = cp.array((ni.eval_rho2(_sorted_mol, ao[0], mo_coeff_mask_a, mo_occ[0], mask, xctype),
+                            ni.eval_rho2(_sorted_mol, ao[0], mo_coeff_mask_b, mo_occ[1], mask, xctype)))
             vxc, fxc = ni.eval_xc_eff(xc_code, rho, deriv=deriv, spin=1)[1:3]
-            u_u, u_d, d_d = fxc[0].T * weight
-            rho1a = ni.eval_rho(_sorted_mol, ao[0], dmvo0_mask, mask, xctype, hermi=1)
-            rho1b = ni.eval_rho(_sorted_mol, ao[0], dmvo1_mask, mask, xctype, hermi=1)
-
-            fmat_(_sorted_mol, f1vo[0], ao, u_u*rho1a+u_d*rho1b, mask, shls_slice, ao_loc)
-            fmat_(_sorted_mol, f1vo[1], ao, u_d*rho1a+d_d*rho1b, mask, shls_slice, ao_loc)
+            rho2 = cp.array((ni.eval_rho(_sorted_mol, ao[0], dmvo0_mask, mask, xctype, hermi=1),
+                             ni.eval_rho(_sorted_mol, ao[0], dmvo1_mask, mask, xctype, hermi=1)))
+            rho2 = rho2[:, cp.newaxis].copy()
+            tmp = contract("axg,axbyg->byg", rho2, fxc)
+            wv = contract("byg,g->byg", tmp, weight)
+            tmp = None
+            fmat_(_sorted_mol, f1vo[0], ao, wv[0], mask, shls_slice, ao_loc)
+            fmat_(_sorted_mol, f1vo[1], ao, wv[1], mask, shls_slice, ao_loc)
 
     elif xctype == 'GGA':
         for ao, mask, weight, coords \
