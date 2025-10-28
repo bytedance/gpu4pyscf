@@ -58,7 +58,7 @@ def benchmark_with_cpu(mol, xc, nstates=3, lindep=1.0e-12, tda=False, extype=0):
     tdsf.collinear = 'mcol'
     tdsf.nstates=5
     tdsf.collinear_samples=10
-    output = tdsf.kernel()
+    tdsf.kernel()
 
     g = tdsf.Gradients()
     g.kernel()

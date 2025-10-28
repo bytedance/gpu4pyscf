@@ -29,7 +29,7 @@ from gpu4pyscf.grad import tdrks
 
 
 # TODO: meta-GGA should be supported.
-def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
+def grad_elec(td_grad, x_y, atmlst=None, verbose=logger.INFO):
     ''' Spin flip TDA gradient in UKS framework. Note: This function supports
     both TDA or TDA results.
 
@@ -101,7 +101,7 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
 
     f1vo, f1oo, vxc1, k1ao = \
             _contract_xc_kernel(td_grad, mf.xc, dmx,
-                                (dmzoo_a,dmzoo_b), True, True, max_memory, td_grad.base.extype)
+                                (dmzoo_a,dmzoo_b), True, True, td_grad.base.extype)
     # f1vo, (2,2,4,nao,nao), (X+Y) and (X-Y) with fxc_sf
     # f1oo, (2,4,nao,nao), 2T with fxc_sc
     # vxc1, ao with v1^{\sigma}
@@ -356,7 +356,7 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
                     j_factor=0.0, k_factor=k_factor, hermi=2, omega=omega)
             dvhf_all += dvhf * 1
 
-    fxcz1 = _contract_xc_kernel_z(td_grad, mf.xc, z1ao, max_memory)
+    fxcz1 = _contract_xc_kernel_z(td_grad, mf.xc, z1ao)
     veff1 = cp.zeros((2,4,3,nao,nao))
     veff1[:,0] += vxc1[:,1:]
     veff1[:,1] += (f1oo[:,1:] + fxcz1[:,1:])*2
@@ -372,15 +372,15 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
 
     if atmlst is None:
         atmlst = range(mol.natm)
-    offsetdic = mol.offset_nr_by_atom()
+
     de = cp.zeros((len(atmlst),3))
     delec = 2.0 * (dh_ground + dh_td - ds)
     aoslices = mol.aoslice_by_atom()
     delec = cp.asarray([cp.sum(delec[:, p0:p1], axis=1) for p0, p1 in aoslices[:, 2:]])
 
     deveff0 = cp.asarray(
-    [contract("xpq,pq->x", veff1a[0,:,p0:p1], oo0a[p0:p1] + dmz1dooa[p0:p1] * 0.5)
-     for p0, p1 in aoslices[:, 2:]])
+        [contract("xpq,pq->x", veff1a[0,:,p0:p1], oo0a[p0:p1] + dmz1dooa[p0:p1] * 0.5)
+        for p0, p1 in aoslices[:, 2:]])
     deveff0 += cp.asarray(
         [contract("xpq,pq->x", veff1b[0,:,p0:p1], oo0b[p0:p1] + dmz1doob[p0:p1] * 0.5)
         for p0, p1 in aoslices[:, 2:]])
@@ -430,7 +430,7 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
     return de.get()
 
 def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
-                        with_kxc=True, max_memory=2000, extype=0):
+                        with_kxc=True, extype=0):
     mol = td_grad.mol
     mf = td_grad.base._scf
     grids = mf.grids
@@ -472,8 +472,6 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
 
     dmvo0 = opt.sort_orbitals(dmvo, axis=[0, 1])
 
-    p0, p1 = 0, 0 
-
     if xctype == "LDA":
         fmat_, ao_deriv = tdrks._lda_eval_mat_, 1
     elif xctype == "GGA":
@@ -484,8 +482,6 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
     if xctype == 'LDA':
         for ao, mask, weight, coords \
                 in ni.block_loop(_sorted_mol, grids, nao, ao_deriv):
-            p0 = p1
-            p1+= weight.shape[0]
 
             mo_coeff_mask_a = mo_coeff[0, mask]
             mo_coeff_mask_b = mo_coeff[1, mask]
@@ -553,8 +549,6 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
     elif xctype == 'GGA':
         for ao, mask, weight, coords \
                 in ni.block_loop(_sorted_mol, grids, nao, ao_deriv):
-            p0 = p1
-            p1+= weight.shape[0]
 
             mo_coeff_mask_a = mo_coeff[0, mask]
             mo_coeff_mask_b = mo_coeff[1, mask]
@@ -667,7 +661,7 @@ def uks_sf_gga_wv2_p(rho1, kxc_sf, weight):
     return gv*weight
 
 
-def _contract_xc_kernel_z(td_grad, xc_code, dmvo, max_memory=2000):
+def _contract_xc_kernel_z(td_grad, xc_code, dmvo):
     mol = td_grad.base._scf.mol
     mf = td_grad.base._scf
     grids = mf.grids
@@ -707,7 +701,7 @@ def _contract_xc_kernel_z(td_grad, xc_code, dmvo, max_memory=2000):
     if xctype == 'LDA':
 
         for ao, mask, weight, coords \
-                in ni.block_loop(_sorted_mol, grids, nao, ao_deriv, max_memory):
+                in ni.block_loop(_sorted_mol, grids, nao, ao_deriv):
             mo_coeff_mask_a = mo_coeff[0, mask]
             mo_coeff_mask_b = mo_coeff[1, mask]
             dmvo0_mask = dmvo0[mask[:, None], mask]
@@ -726,7 +720,7 @@ def _contract_xc_kernel_z(td_grad, xc_code, dmvo, max_memory=2000):
 
     elif xctype == 'GGA':
         for ao, mask, weight, coords \
-                in ni.block_loop(_sorted_mol, grids, nao, ao_deriv, max_memory):
+                in ni.block_loop(_sorted_mol, grids, nao, ao_deriv):
             mo_coeff_mask_a = mo_coeff[0, mask]
             mo_coeff_mask_b = mo_coeff[1, mask]
             dmvo0_mask = dmvo0[mask[:, None], mask]
@@ -760,7 +754,7 @@ def _contract_xc_kernel_z(td_grad, xc_code, dmvo, max_memory=2000):
 class Gradients(tdrhf_grad.Gradients):
     @lib.with_doc(grad_elec.__doc__)
     def grad_elec(self, xy, singlet=None, atmlst=None, verbose=None):
-        return grad_elec(self, xy, atmlst, self.max_memory, self.verbose)
+        return grad_elec(self, xy, atmlst, self.verbose)
 
 Grad = Gradients
 
