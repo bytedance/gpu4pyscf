@@ -32,16 +32,11 @@ from gpu4pyscf.grad import tdrks
 def grad_elec(td_grad, x_y, atmlst=None, verbose=logger.INFO):
     ''' Spin flip TDA gradient in UKS framework. Note: This function supports
     both TDA or TDA results.
-
-    Parameters
-    ----------
-    Args:
-        td_grad : sftda.TDA_SF object.
-
-    Returns:
-        The gradient of excited states: Ei^{\\xi} = E0^{\\xi} + wi^{\\xi}
+    
     This function is based on https://github.com/pyscf/pyscf-forge/blob/master/pyscf/grad/tduks_sf.py
     '''
+    if getattr(td_grad.base._scf, 'with_df', None) is not None:
+        raise NotImplementedError('Density fitting TDA-SF gradient is not supported yet.')
     log = logger.new_logger(td_grad, verbose)
     time0 = logger.process_clock(), logger.perf_counter()
 
@@ -755,8 +750,3 @@ class Gradients(tdrhf_grad.Gradients):
     @lib.with_doc(grad_elec.__doc__)
     def grad_elec(self, xy, singlet=None, atmlst=None, verbose=None):
         return grad_elec(self, xy, atmlst, self.verbose)
-
-Grad = Gradients
-
-from pyscf import sftda
-sftda.uks_sf.TDA_SF.Gradients = sftda.uks_sf.TDDFT_SF.Gradients = lib.class_as_method(Gradients)
