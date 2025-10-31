@@ -59,53 +59,65 @@ def benchmark_with_cpu(mol, xc, nstates=3, lindep=1.0e-12, tda=False, extype=0):
     tdsf.nstates=5
     tdsf.collinear_samples=10
     tdsf.kernel()
+    print("xc", xc)
+    print("extype", extype)
+    print("etot", mf.e_tot)
+    print("excitation energy", tdsf.e)
 
     g = tdsf.Gradients()
     g.kernel()
 
-    return g.de
+    return mf.e_tot, tdsf.e, g.de
 
 
 def _check_grad(mol, xc, tol=1e-5, lindep=1.0e-12, disp=None, tda=True, method="cpu", extype=0):
     if not tda:
         raise NotImplementedError("spin-flip TDDFT gradients is not implemented")
     if method == "cpu":
-        grad_gpu = benchmark_with_cpu(mol, xc, nstates=5, lindep=lindep, tda=tda, extype=extype)
+        etot, e, grad_gpu = benchmark_with_cpu(mol, xc, nstates=5, lindep=lindep, tda=tda, extype=extype)
     else:
         raise NotImplementedError("Only compared with CPU")
         
-    return grad_gpu
+    return etot, e, grad_gpu
 
 
 class KnownValues(unittest.TestCase):
     @unittest.skipIf(num_devices > 1, '')
     def test_grad_b3lyp_tda_spinflip_up_cpu(self):
-        grad_gpu = _check_grad(mol, xc="b3lyp", tol=5e-10, method="cpu")
+        etot, e, grad_gpu = _check_grad(mol, xc="b3lyp", tol=5e-10, method="cpu")
         # ref from pyscf-forge
+        assert abs(etot - -75.9674347270528) < 1e-8
+        assert abs(e - np.array([0.46618494, 0.53438998, 0.60047275, 0.65786033, 0.92091718])).max() < 1e-5
         ref = np.array([[ 8.79547051e-16,  8.63728537e-14,  1.87755267e-01],
                         [-4.31890391e-16,  2.15026042e-01, -9.38746716e-02],
                         [-4.50003252e-16, -2.15026042e-01, -9.38746716e-02]])
         assert abs(grad_gpu - ref).max() < 1e-5
         
     def test_grad_b3lyp_tda_spinflip_down_cpu(self):
-        grad_gpu = _check_grad(mol, xc="b3lyp", tol=5e-10, method="cpu", extype=1)
+        etot, e, grad_gpu = _check_grad(mol, xc="b3lyp", tol=5e-10, method="cpu", extype=1)
         # ref from pyscf-forge
+        assert abs(etot - -75.96743472705282) < 1e-8
+        assert abs(e - np.array([0.0034149,  0.08157731, 0.23027453, 0.50644857, 0.51065628])).max() < 1e-5
         ref = np.array([[-3.01640558e-16,  1.52982216e-13,  5.10689029e-02],
                         [ 1.36165869e-16,  4.52872857e-02, -2.55387304e-02],
                         [-3.08111636e-17, -4.52872857e-02, -2.55387304e-02],])
         assert abs(grad_gpu - ref).max() < 1e-5
 
     def test_grad_svwn_tda_spinflip_down_cpu(self):
-        grad_gpu = _check_grad(mol, xc="svwn", tol=5e-10, method="cpu", extype=1)
+        etot, e, grad_gpu = _check_grad(mol, xc="svwn", tol=5e-10, method="cpu", extype=1)
         # ref from pyscf-forge
+        assert abs(etot - -75.39033965461661) < 1e-8
+        assert abs(e - np.array([0.00210504, 0.07530215, 0.22255285, 0.50300732, 0.50382963])).max() < 1e-5
         ref = np.array([[-8.15030724e-16, -6.13885762e-14,  6.41681368e-02],
                         [ 1.12931062e-16,  5.34632826e-02, -3.20887796e-02],
                         [ 7.97399496e-17, -5.34632826e-02, -3.20887796e-02],])
         assert abs(grad_gpu - ref).max() < 1e-5
 
     def test_grad_camb3lyp_tda_spinflip_down_cpu(self):
-        grad_gpu = _check_grad(mol, xc="camb3lyp", tol=5e-10, method="cpu", extype=1)
+        etot, e, grad_gpu = _check_grad(mol, xc="camb3lyp", tol=5e-10, method="cpu", extype=1)
         # ref from pyscf-forge
+        assert abs(etot - -75.93920847775132) < 1e-8
+        assert abs(e - np.array([0.00335301, 0.07772481, 0.2267033, 0.50960632, 0.5133939])).max() < 1e-5
         ref = np.array([[-7.43754261e-18, -1.56347842e-13,  4.99263503e-02],
                         [-1.84572351e-17,  4.52908126e-02, -2.49673842e-02],
                         [ 2.40683934e-17, -4.52908126e-02, -2.49673842e-02],])
