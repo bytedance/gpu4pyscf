@@ -16,9 +16,8 @@ import pyscf
 import numpy as np
 import unittest
 import pytest
-from pyscf import scf, dft, tdscf
+from pyscf import scf, dft
 import gpu4pyscf
-from gpu4pyscf import scf as gpu_scf
 from packaging import version
 from gpu4pyscf.lib.multi_gpu import num_devices
 
@@ -33,7 +32,7 @@ pyscf_25 = version.parse(pyscf.__version__) <= version.parse("2.5.0")
 bas0 = "cc-pvdz"
 
 def setUpModule():
-    global mol
+    global mol, mol1
     mol = pyscf.M(
         atom=atom,
         basis=bas0,
@@ -43,12 +42,23 @@ def setUpModule():
         output="/dev/null",
         verbose=1,
     )
+    mol1 = pyscf.M(
+        atom=atom,
+        basis=bas0,
+        max_memory=32000,
+        charge=0,
+        spin=0,
+        output="/dev/null",
+        verbose=1,
+    )
 
 
 def tearDownModule():
-    global mol
+    global mol, mol1
     mol.stdout.close()
     del mol
+    mol1.stdout.close()
+    del mol1
 
 
 def benchmark_with_cpu(mol, xc, nstates=3, lindep=1.0e-12, tda=False, extype=0):
@@ -63,9 +73,13 @@ def benchmark_with_cpu(mol, xc, nstates=3, lindep=1.0e-12, tda=False, extype=0):
     print("extype", extype)
     print("etot", mf.e_tot)
     print("excitation energy", tdsf.e)
+    print("whether converged", tdsf.converged)
+    print("xy", tdsf.xy)
 
     g = tdsf.Gradients()
     g.kernel()
+    print("gradient")
+    print(g.de)
 
     return mf.e_tot, tdsf.e, g.de
 
@@ -121,6 +135,46 @@ class KnownValues(unittest.TestCase):
         ref = np.array([[-7.43754261e-18, -1.56347842e-13,  4.99263503e-02],
                         [-1.84572351e-17,  4.52908126e-02, -2.49673842e-02],
                         [ 2.40683934e-17, -4.52908126e-02, -2.49673842e-02],])
+        assert abs(grad_gpu - ref).max() < 1e-5
+
+    def test_grad_b3lyp_tda_spinflip_up_cpu_closed(self):
+        etot, e, grad_gpu = _check_grad(mol1, xc="b3lyp", tol=5e-10, method="cpu")
+        # ref from pyscf-forge
+        assert abs(etot - -76.42037833354925) < 1e-8
+        assert abs(e - np.array([0.25433265, 0.33124974, 0.3313682, 0.40247177, 0.47307456])).max() < 1e-5
+        ref = np.array([[ 1.29088518e-16,  6.98423827e-14,  1.25014262e-01],
+                        [-1.36624149e-16,  8.37484153e-02, -6.25098673e-02],
+                        [ 1.80012190e-16, -8.37484153e-02, -6.25098673e-02]])
+        assert abs(grad_gpu - ref).max() < 1e-5
+        
+    def test_grad_b3lyp_tda_spinflip_down_cpu_closed(self):
+        etot, e, grad_gpu = _check_grad(mol1, xc="b3lyp", tol=5e-10, method="cpu", extype=1)
+        # ref from pyscf-forge
+        assert abs(etot - -76.42037833354925) < 1e-8
+        assert abs(e - np.array([0.2543327, 0.33124974, 0.3313685, 0.40247202, 0.4730746])).max() < 1e-5
+        ref = np.array([[-5.16805682e-16,  7.28823057e-14,  1.25014068e-01],
+                        [ 1.94935391e-16,  8.37484121e-02, -6.25097703e-02],
+                        [ 1.20139074e-17, -8.37484121e-02, -6.25097703e-02],])
+        assert abs(grad_gpu - ref).max() < 1e-5
+
+    def test_grad_svwn_tda_spinflip_down_cpu_closed(self):
+        etot, e, grad_gpu = _check_grad(mol1, xc="svwn", tol=5e-10, method="cpu", extype=1)
+        # ref from pyscf-forge
+        assert abs(etot - -75.85470242125601) < 1e-8
+        assert abs(e - np.array([0.25020513, 0.32400566, 0.32879602, 0.39954396, 0.47440403])).max() < 1e-5
+        ref = np.array([[-1.04007210e-16,  2.76349222e-15,  1.40334993e-01],
+                        [ 4.57442221e-17,  9.05506406e-02, -7.01720839e-02],
+                        [ 1.95402062e-16, -9.05506406e-02, -7.01720839e-02],])
+        assert abs(grad_gpu - ref).max() < 1e-5
+
+    def test_grad_camb3lyp_tda_spinflip_down_cpu_closed(self):
+        etot, e, grad_gpu = _check_grad(mol1, xc="camb3lyp", tol=5e-10, method="cpu", extype=1)
+        # ref from pyscf-forge
+        assert abs(etot - -76.39180300401368) < 1e-8
+        assert abs(e - np.array([0.25653358, 0.33449489, 0.33602869, 0.40788379, 0.47369817])).max() < 1e-5
+        ref = np.array([[ 8.58453733e-14, -2.06289065e-13,  1.21090859e-01],
+                        [-4.13696957e-14,  8.17477776e-02, -6.05484440e-02],
+                        [-4.39523378e-14, -8.17477776e-02, -6.05484440e-02],])
         assert abs(grad_gpu - ref).max() < 1e-5
     
 

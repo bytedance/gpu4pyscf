@@ -421,6 +421,7 @@ def grad_elec(td_grad, x_y, atmlst=None, verbose=logger.INFO):
             for p0, p1 in aoslices[:, 2:]])
 
     de += 2.0 * dvhf_all + delec + dh1e_ground + dh1e_td + deveff0 + deveff1 + deveff2 + deveff3
+    print("de", de)
     log.timer('TDUKS nuclear gradients', *time0)
     return de.get()
 
@@ -750,3 +751,5 @@ class Gradients(tdrhf_grad.Gradients):
     @lib.with_doc(grad_elec.__doc__)
     def grad_elec(self, xy, singlet=None, atmlst=None, verbose=None):
         return grad_elec(self, xy, atmlst, self.verbose)
+
+Grad = Gradients
