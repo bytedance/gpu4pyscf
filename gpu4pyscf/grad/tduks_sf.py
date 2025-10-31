@@ -93,6 +93,10 @@ def grad_elec(td_grad, x_y, atmlst=None, verbose=logger.INFO):
         dmzoo_b = reduce(cp.dot, (orbvb, dvv_b, orbvb.T))
     else:
         raise RuntimeError("Only spin-flip UHF/UKS is supported")
+    print("dmzoo_a")
+    print(dmzoo_a)
+    print("dmzoo_b")
+    print(dmzoo_b)
 
     f1vo, f1oo, vxc1, k1ao = \
             _contract_xc_kernel(td_grad, mf.xc, dmx,
@@ -219,6 +223,14 @@ def grad_elec(td_grad, x_y, atmlst=None, verbose=logger.INFO):
     z1a, z1b = ucphf.solve(fvind, mo_energy, mo_occ, (wvoa,wvob),
                            max_cycle=td_grad.cphf_max_cycle,
                            tol=td_grad.cphf_conv_tol)[0]
+    print("z1a")
+    print(z1a)
+    print("z1b")
+    print(z1b)
+    print("wvoa")
+    print(wvoa)
+    print("wvob")
+    print(wvob)
 
     time1 = log.timer('Z-vector using UCPHF solver', *time0)
 
@@ -276,6 +288,8 @@ def grad_elec(td_grad, x_y, atmlst=None, verbose=logger.INFO):
     im0a = reduce(cp.dot, (mo_coeff[0], im0a+zeta_a*dm1a, mo_coeff[0].T))
     im0b = reduce(cp.dot, (mo_coeff[1], im0b+zeta_b*dm1b, mo_coeff[1].T))
     im0 = im0a + im0b
+    print("im0")
+    print(im0)
 
     dmz1dooa = z1ao[0] + dmzoo_a
     dmz1doob = z1ao[1] + dmzoo_b
@@ -421,7 +435,14 @@ def grad_elec(td_grad, x_y, atmlst=None, verbose=logger.INFO):
             for p0, p1 in aoslices[:, 2:]])
 
     de += 2.0 * dvhf_all + delec + dh1e_ground + dh1e_td + deveff0 + deveff1 + deveff2 + deveff3
-    print("de", de)
+    print("dvhf_all", dvhf_all)
+    print("delec", delec)
+    print("dh1e_ground", dh1e_ground)
+    print("dh1e_td", dh1e_td)
+    print("deveff0", deveff0)
+    print("deveff1", deveff1)
+    print("deveff2", deveff2)
+    print("deveff3", deveff3)
     log.timer('TDUKS nuclear gradients', *time0)
     return de.get()
 
