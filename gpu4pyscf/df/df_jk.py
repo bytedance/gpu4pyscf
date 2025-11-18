@@ -24,10 +24,12 @@ from pyscf.scf import dhf
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.cupy_helper import (
     contract, transpose_sum, reduce_to_device, tag_array)
-from gpu4pyscf.dft import rks, uks, numint
+from gpu4pyscf.dft import rks, uks, numint, gks
 from gpu4pyscf.scf import hf, uhf, rohf
 from gpu4pyscf.df import df, int3c2e
 from gpu4pyscf.__config__ import num_devices
+from gpu4pyscf.scf import ghf
+from gpu4pyscf.lib.cupy_helper import asarray
 
 def _pin_memory(array):
     mem = cupy.cuda.alloc_pinned_memory(array.nbytes)
@@ -116,25 +118,55 @@ class _DFHF:
         return super().reset(mol)
 
     def get_j(self, mol=None, dm=None, hermi=1, omega=None):
-        return self.with_df.get_jk(dm, hermi, True, False, self.direct_scf_tol, omega)[0]
+        return self.get_jk(mol, dm, hermi, with_j=True, with_k=False, omega=omega)[0]
 
     def get_k(self, mol=None, dm=None, hermi=1, omega=None):
-        return self.with_df.get_jk(dm, hermi, False, True, self.direct_scf_tol, omega)[1]
+        return self.get_jk(mol, dm, hermi, with_j=False, with_k=True, omega=omega)[1]
 
     def get_jk(self, mol=None, dm=None, hermi=1, with_j=True, with_k=True,
                omega=None):
         if dm is None: dm = self.make_rdm1()
-        if self.with_df and self.only_dfj:
-            vj = vk = None
-            if with_j:
-                vj = self.get_j(mol, dm, hermi, omega)
-            if with_k:
-                vk = super().get_jk(mol, dm, hermi, False, True, omega)[1]
-        elif self.with_df:
-            vj, vk = self.with_df.get_jk(dm, hermi, with_j, with_k,
-                                         self.direct_scf_tol, omega)
-        else:
-            vj, vk = super().get_jk(mol, dm, hermi, with_j, with_k, omega)
+        
+        # Check if K matrix is requested and not using RIJONX
+        with_dfk = with_k and not self.only_dfj
+        
+        vj = vk = None
+
+        if (with_j or with_dfk) and self.with_df:
+            # Check if this is a GHF instance
+            if isinstance(self, ghf.GHF):
+                
+                # Define the local "jkbuild" strategy for DF calculation
+                def jkbuild(mol_obj, dm_obj, hermi, omega=None):
+                    # The DF engine get_jk expects (n_dm, nao, nao)
+                    nao = mol_obj.nao
+                    dm_obj = dm_obj.reshape(-1, nao, nao)
+                    
+                    # Call the actual DF integral engine
+                    # Note: gpu4pyscf's get_jk doesn't use with_j/with_k
+                    return self.with_df.get_jk(dm_obj, hermi, 
+                                               #with_j=True, with_k=True,
+                                               direct_scf_tol=self.direct_scf_tol, 
+                                               omega=omega)
+
+                # Call the top-level GHF adapter with the DF strategy
+                vj, vk = ghf.get_jk(mol, dm, hermi, with_j, with_dfk,
+                                    jkbuild=jkbuild, omega=omega)
+            
+            else: # Standard RHF/UHF path
+                vj, vk = self.with_df.get_jk(dm, hermi, with_j, with_dfk,
+                                             self.direct_scf_tol, omega)
+        
+        # Handle K matrix for RIJONX (only_dfj = True)
+        if with_k and not with_dfk:
+            # super() will call GHF.get_jk (which uses non-DF)
+            # or RHF/UHF.get_jk
+            vk = super().get_jk(mol, dm, hermi, False, True, omega)[1]
+            
+        # Ensure we only return what was requested
+        if not with_j: vj = None
+        if not with_k: vk = None
+            
         return vj, vk
 
     def nuc_grad_method(self):
@@ -273,7 +305,66 @@ class _DFHF:
                     vxc -= vk * .5
                     exc -= cupy.einsum('ij,ji', dm, vk).real * .25
                 ecoul = cupy.einsum('ij,ji', dm, vj).real * .5
+            elif isinstance(self, ghf.GHF):
+                ground_state = isinstance(dm, cupy.ndarray) and dm.ndim == 2
+                
+                if hermi == 2:  # because rho = 0
+                    n, exc, vxc = 0, 0, 0
+                else:
+                    max_memory = self.max_memory - lib.current_memory()[0]
+                    if ni.collinear[0].lower() != 'm':
+                        raise NotImplementedError('Only multi-colinear GKS is implemented for DF')
+                    
+                    n, exc, vxc = ni.get_vxc(mol, self.grids, self.xc, dm,
+                                             hermi=hermi, max_memory=max_memory)
+                    logger.debug(self, 'nelec by numeric integration = %s', n)
+                    t0 = logger.timer(self, 'vxc', *t0)
+                    
+                    if self.do_nlc():
+                        if ni.libxc.is_nlc(self.xc):
+                            xc = self.xc
+                        else:
+                            assert ni.libxc.is_nlc(self.nlc)
+                            xc = self.nlc
+                        n_nlc, enlc, vnlc = ni.nr_nlc_vxc(mol, self.nlcgrids, xc, dm,
+                                                      hermi=hermi, max_memory=max_memory)
+                        exc += enlc
+                        vxc += vnlc
+                        logger.debug(self, 'nelec with nlc grids = %s', n_nlc)
 
+                if not ni.libxc.is_hybrid_xc(self.xc):
+                    vk = None
+                    vj = self.get_j(mol, dm, hermi)
+                    vxc += vj
+                else:
+                    omega, alpha, hyb = ni.rsh_and_hybrid_coeff(self.xc, spin=mol.spin)
+                    if omega == 0:
+                        vj, vk = self.get_jk(mol, dm, hermi)
+                        vk *= hyb
+                    elif alpha == 0:
+                        vj = self.get_j(mol, dm, hermi)
+                        vk = self.get_k(mol, dm, hermi, omega=-omega)
+                        vk *= hyb
+                    elif hyb == 0:
+                        vj = self.get_j(mol, dm, hermi)
+                        vk = self.get_k(mol, dm, hermi, omega=omega)
+                        vk *= alpha
+                    else:
+                        vj, vk = self.get_jk(mol, dm, hermi)
+                        vk *= hyb
+                        vklr = self.get_k(mol, dm, hermi, omega=omega)
+                        vklr *= (alpha - hyb)
+                        vk += vklr
+                    
+                    vxc += vj - vk
+
+                    if ground_state:
+                        exc -= cupy.einsum('ij,ji', dm, vk).real * .5
+
+                if ground_state:
+                    ecoul = cupy.einsum('ij,ji', dm, vj).real * .5
+                else:
+                    ecoul = None
             else:
                 raise NotImplementedError("DF only supports R/U/RO KS.")
             t0 = logger.timer(self, 'veff', *t0)
@@ -285,12 +376,19 @@ class _DFHF:
         elif isinstance(self, hf.RHF):
             vj, vk = self.get_jk(mol, dm, hermi=hermi)
             return vj - vk * .5
+        elif isinstance(self, ghf.GHF): # (New) GHF branch
+            vj, vk = self.get_jk(mol, dm, hermi=hermi)
+            return vj - vk
         else:
-            raise NotImplementedError("DF only supports R/U/RO HF.")
+            raise NotImplementedError("DF only supports R/U/RO/G HF.")
 
     def to_cpu(self):
         obj = self.undo_df().to_cpu().density_fit()
-        return utils.to_cpu(self, obj)
+        obj = utils.to_cpu(self, obj)
+        if isinstance(self, ghf.GHF):
+            obj.collinear = self.collinear
+            obj.spin_samples = self.spin_samples
+        return obj
 
 def _jk_task_with_mo(dfobj, dms, mo_coeff, mo_occ,
                      with_j=True, with_k=True, hermi=0, device_id=0):
