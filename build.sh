@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Log build start time for debugging
+echo "Build started at: $(date)"
+
 export CUDA_HOME=${CUDA_HOME:-/usr/bin/}
 echo "PATH=${PATH}"
 echo "CUDA_HOME=${CUDA_HOME}"
