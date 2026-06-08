@@ -62,7 +62,7 @@ class HarrisRKS(rks.RKS):
             
         # Global evaluation uses no weights
         vj, vk, vxc, e_j, e_k, e_xc, int_rho_vxc = self.eval_density_func(
-            mol, self.xc, self.grids, atomic_weights=None, grid_weights=None
+            mol, self.xc, self.grids
         )
         
         v_eff_ao = _as_cupy(vj) + _as_cupy(vxc)
@@ -155,10 +155,11 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
         self.fragment = self.fragments[0]
 
     def kernel(self):
-
+        import time
+        t0 = time.time()
         if not self.mf_outer.converged:
             self.mf_outer.kernel()
-            
+        t1 = time.time()
         e_global_low = self.mf_outer.e_tot
         self.log.note(f"Global Low-Level E (Harris) = {e_global_low:.8f}")
         
@@ -173,10 +174,12 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
 
         self.build_bath(ifrag, mo_coeff, mo_occ, X_inv, X)
         self.build_embedded_hamiltonian(ifrag, hcore_orig)
+        t2 = time.time()
         
         self.log.info("Running high-level inner SCF in embedding space...")
         mf_inner = self._build_inner_mf(ifrag, dm_full_ao_low)
         self.solve_embedded(ifrag)
+        t3 = time.time()
         
         dm_emb_high = _as_cupy(mf_inner.make_rdm1())
         dm_emb_low = self.dm_emb_init[ifrag]
@@ -200,6 +203,11 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
             self.log.note(f"Low-Level E : {e_low:.8f}")
         else:
             raise NotImplementedError("WFT evaluation is not implemented for this class.")
+        t4 = time.time()
+        self.log.note(f"Total Harris embedding Time: {t4 - t0:.4f} s")
+        self.log.note(f"Global Low-Level Time: {t1 - t0:.4f} s")
+        self.log.note(f"Build Bath Time: {t2 - t1:.4f} s")
+        self.log.note(f"High-Level Time: {t3 - t2:.4f} s")
         
         delta_e = float(e_high - e_low)
         self.log.note(f"Global Low-Level E : {e_global_low:.8f}")
