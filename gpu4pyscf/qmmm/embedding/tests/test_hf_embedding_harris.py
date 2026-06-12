@@ -16,16 +16,15 @@ import unittest
 import numpy as np
 import cupy as cp
 from pyscf import gto
-from gpu4pyscf.dft import rks
-from gpu4pyscf.qmmm.embedding.embedding_dft import SingleFragmentEmbedding
-from gpu4pyscf.qmmm.embedding.embedding_dft_harris import HarrisRKS, SingleFragmentEmbedding_ML
+from gpu4pyscf.scf import hf as gpu_hf
+from gpu4pyscf.qmmm.embedding.embedding_hf import SingleFragmentEmbedding
+from gpu4pyscf.qmmm.embedding.embedding_hf_harris import OneStepRHF, SingleFragmentEmbedding_ML
 
 
 def dummy_eval_density_func(mol, xc, grids):
-    mf = rks.RKS(mol)
-    mf.xc = xc
-    mf.grids = grids
+    mf = gpu_hf.RHF(mol)
     mf.verbose = 0
+    mf.conv_tol = 1.0E-12
     mf.kernel()
     
     dm = cp.asarray(mf.make_rdm1())
@@ -33,19 +32,12 @@ def dummy_eval_density_func(mol, xc, grids):
     # Calculate exact J and K matrices
     vj, vk = mf.get_jk(mol, dm)
     e_j = 0.5 * float(cp.sum(dm * vj))
-    
-    is_hybrid = mf._numint.libxc.is_hybrid_xc(xc)
-    if is_hybrid:
-        hyb = mf._numint.libxc.hybrid_coeff(xc, spin=mol.spin)
-        vk = vk * hyb
-        e_k = 0.5 * float(cp.sum(dm * vk))
-    else:
-        vk = None
-        e_k = 0.0
+    e_k = 0.25 * float(cp.sum(dm * vk))
         
-    # Calculate exact Vxc and Exc
-    _, e_xc, vxc = mf._numint.nr_rks(mol, grids, xc, dm)
-    int_rho_vxc = float(cp.sum(dm * vxc))
+    # For HF, there is no Exchange-Correlation potential/energy from DFT
+    vxc = cp.zeros_like(vj)
+    e_xc = 0.0
+    int_rho_vxc = 0.0
     
     return vj, vk, vxc, e_j, e_k, float(e_xc), int_rho_vxc
 
@@ -77,21 +69,22 @@ class TestMLEmbedding(unittest.TestCase):
     def tearDownClass(cls):
         del cls.mol
 
-    def test_harris_rks_exactness(self):
-        mf_ref = rks.RKS(self.mol, xc='PBE')
+    def test_onestep_rhf_exactness(self):
+        mf_ref = gpu_hf.RHF(self.mol)
         mf_ref.verbose = 0
         e_ref = mf_ref.kernel()
 
-        mf_harris = HarrisRKS(self.mol, dummy_eval_density_func, xc='PBE')
-        mf_harris.verbose = 0
-        e_harris = mf_harris.kernel()
+        mf_onestep = OneStepRHF(self.mol, dummy_eval_density_func)
+        mf_onestep.verbose = 0
+        e_onestep = mf_onestep.kernel()
 
-        self.assertAlmostEqual(e_ref, e_harris, places=8, 
-                               msg=f"HarrisRKS energy {e_harris} differs from exact RKS {e_ref}")
+        self.assertAlmostEqual(e_ref, e_onestep, places=8, 
+                               msg=f"OneStepRHF energy {e_onestep} differs from exact RHF {e_ref}")
 
-    def test_full_system_pbe_in_pbe(self):
-        mf_outer = HarrisRKS(self.mol, dummy_eval_density_func, xc='PBE')
-        mf_inner = rks.RKS(self.mol, xc='PBE')
+    def test_full_system_hf_in_hf(self):
+        mf_outer = OneStepRHF(self.mol, dummy_eval_density_func)
+        mf_inner = gpu_hf.RHF(self.mol)
+        mf_inner.conv_tol = 1.0E-12
         
         emb_obj = SingleFragmentEmbedding_ML(mf_outer, mf_inner, self.full_fragment, verbose=0)
         emb_obj.kernel()
@@ -101,35 +94,37 @@ class TestMLEmbedding(unittest.TestCase):
         e_emb = emb_obj.e_tot
         
         self.assertAlmostEqual(e_global, e_emb, places=8, 
-                               msg="Full-system PBE-in-PBE failed exact cancellation.")
+                               msg="Full-system HF-in-HF failed exact cancellation.")
 
     def test_equivalence_to_standard_embedding(self):
 
-        mf_outer_std = rks.RKS(self.mol, xc='PBE')
-        mf_inner_std = rks.RKS(self.mol, xc='B3LYP')
+        mf_outer_std = gpu_hf.RHF(self.mol)
+        mf_outer_std.conv_tol = 1.0E-12
+        mf_inner_std = gpu_hf.RHF(self.mol)
+        mf_inner_std.conv_tol = 1.0E-12
         emb_std = SingleFragmentEmbedding(mf_outer_std, mf_inner_std, self.methyl_fragment, verbose=0)
         e_std = emb_std.kernel()
 
-        mf_outer_ml = HarrisRKS(self.mol, dummy_eval_density_func, xc='PBE')
-        mf_inner_ml = rks.RKS(self.mol, xc='B3LYP')
+        mf_outer_ml = OneStepRHF(self.mol, dummy_eval_density_func)
+        mf_inner_ml = gpu_hf.RHF(self.mol)
+        mf_inner_ml.conv_tol = 1.0E-12
         emb_ml = SingleFragmentEmbedding_ML(mf_outer_ml, mf_inner_ml, self.methyl_fragment, verbose=0)
         e_ml = emb_ml.kernel()
 
         self.assertAlmostEqual(e_std, e_ml, places=8, 
                                msg=f"ML Embedding {e_ml} diverged from Standard Embedding {e_std}!")
 
-    def test_harris_max_cycle_override(self):
+    def test_onestep_max_cycle_override(self):
 
-        mf_harris = HarrisRKS(self.mol, dummy_eval_density_func, xc='PBE')
-        mf_harris.max_cycle = 100 
-        mf_harris.verbose = 0
+        mf_onestep = OneStepRHF(self.mol, dummy_eval_density_func)
+        mf_onestep.max_cycle = 100 
+        mf_onestep.verbose = 0
         
-        mf_harris.kernel()
+        mf_onestep.kernel()
         
-        self.assertEqual(mf_harris.max_cycle, 1, 
-                         "HarrisRKS failed to override malicious max_cycle setting!")
+        self.assertEqual(mf_onestep.max_cycle, 1, 
+                         "OneStepRHF failed to override malicious max_cycle setting!")
 
 if __name__ == '__main__':
-    print("Full Tests for ML-Driven ONIOM-like Embedding...")
+    print("Full Tests for ML-Driven ONIOM-like Embedding (HF Version)...")
     unittest.main()
-

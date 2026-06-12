@@ -15,66 +15,56 @@
 import numpy as np
 import cupy as cp
 from pyscf import lib
-from gpu4pyscf.dft import rks
+from gpu4pyscf.scf import hf as gpu_hf
 from gpu4pyscf.lib.cupy_helper import tag_array
 from gpu4pyscf.qmmm.embedding.embedding import DMET, lowdin_orth, _as_cupy
 from gpu4pyscf.qmmm.embedding.embedding_dft import SingleFragmentEmbedding
 
 
-class HarrisRKS(rks.RKS):
+class OneStepRHF(gpu_hf.RHF):
     """
-    Harris RKS class based on machine learning (ML) predicted density.
+    One-step RHF class based on machine learning (ML) predicted density.
     
     This class bypasses traditional SCF iterations. Instead, it relies entirely 
     on an external ML density evaluation function to construct the global effective 
     potential and calculate the double counting energy.
     """
-    def __init__(self, mol, eval_density_func, xc='LDA,VWN'):
+    def __init__(self, mol, eval_density_func):
         super().__init__(mol)
-        self.xc = xc
         self.max_cycle = 1  
         
         # eval_density_func is the external ML interface.
-        # Signature: def func(mol, xc, grids)
-        # Returns 7 elements:
-        #   1. vj: Coulomb potential matrix (AO basis)
-        #   2. vk: Exact exchange potential matrix (AO basis, can be None for pure DFT)
-        #   3. vxc: Exchange-correlation potential matrix (AO basis)
-        #   4. e_j: Coulomb energy (scalar)
-        #   5. e_k: Exact exchange energy (scalar, can be 0.0 for pure DFT)
-        #   6. e_xc: Exchange-correlation energy (scalar)
-        #   7. int_rho_vxc: Integral of rho * V_xc (scalar)
+        # Expected to return at least: vj, vk, vxc, e_j, e_k, e_xc, int_rho_vxc
+        # (For HF, the XC components are safely ignored)
         self.eval_density_func = eval_density_func
         
         self._v_eff_global = None
         self._e_dc_global = None
-        self._use_harris_veff = False
+        self._use_onestep_veff = False
 
-    def _get_harris_veff(self, mol=None):
+    def _get_ml_veff(self, mol=None):
         if mol is None: 
             mol = self.mol
         
         if self._v_eff_global is not None:
             return self._v_eff_global
             
-        if self.grids.coords is None:
-            self.grids.build()
-            
+        # Passing 'HF' to maintain API compatibility with the ML function
         vj, vk, vxc, e_j, e_k, e_xc, int_rho_vxc = self.eval_density_func(
-            mol, self.xc, self.grids)
+            mol, 'HF', getattr(self, 'grids', None))
         
-        v_eff_ao = _as_cupy(vj) + _as_cupy(vxc)
+        v_eff_ao = _as_cupy(vj)
         if vk is not None:
-            v_eff_ao -= _as_cupy(vk)
+            v_eff_ao -= _as_cupy(vk) * 0.5
             e_k = float(e_k)
         else:
             e_k = 0.0
             
-        # double counting energy
-        e_dc = float(e_j) - e_k + float(int_rho_vxc) - float(e_xc)
+        # double counting energy for exact HF: E_DC = E_J - E_K
+        e_dc = float(e_j) - e_k
         
         vk_array = _as_cupy(vk) if vk is not None else cp.zeros_like(v_eff_ao)
-        v_eff_ao = tag_array(v_eff_ao, ecoul=float(e_j) - e_k, exc=float(e_xc), vj=_as_cupy(vj), vk=vk_array)
+        v_eff_ao = tag_array(v_eff_ao, ecoul=float(e_j) - e_k, exc=0.0, vj=_as_cupy(vj), vk=vk_array)
         
         self._v_eff_global = v_eff_ao
         self._e_dc_global = e_dc
@@ -82,24 +72,24 @@ class HarrisRKS(rks.RKS):
 
     def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
         # Use ML evaluation ONLY during the global SCF step.
-        # For standard embedding steps, fallback to the native exact DFT evaluation.
-        if getattr(self, '_use_harris_veff', False):
-            return self._get_harris_veff(mol)
-        return rks.RKS.get_veff(self, mol, dm, dm_last, vhf_last, hermi)
+        # For standard embedding steps, fallback to the native exact HF evaluation.
+        if getattr(self, '_use_onestep_veff', False):
+            return self._get_ml_veff(mol)
+        return gpu_hf.RHF.get_veff(self, mol, dm, dm_last, vhf_last, hermi)
 
     def kernel(self, dm0=None, **kwargs):
 
         if self.max_cycle != 1:
-            lib.logger.warn(self, "HarrisRKS is a non-iterative method. "
+            lib.logger.warn(self, "OneStepRHF is a non-iterative method. "
                                   f"Overriding max_cycle from {self.max_cycle} to 1.")
             self.max_cycle = 1
 
-        # Temporarily enable Harris ML potential for the global 1-step evaluation
-        self._use_harris_veff = True
+        # Temporarily enable ML potential for the global 1-step evaluation
+        self._use_onestep_veff = True
         try:
-            e_tot = rks.RKS.kernel(self, dm0=dm0, **kwargs)
+            e_tot = gpu_hf.RHF.kernel(self, dm0=dm0, **kwargs)
         finally:
-            self._use_harris_veff = False
+            self._use_onestep_veff = False
             
         self.converged = True
         return e_tot
@@ -108,10 +98,10 @@ class HarrisRKS(rks.RKS):
         """
         E_elec = Tr[D * (h + Veff)] - E_DC
         """
-        if getattr(self, '_use_harris_veff', False):
+        if getattr(self, '_use_onestep_veff', False):
             if dm is None: dm = self.make_rdm1()
             if h1e is None: h1e = self.get_hcore()
-            if vhf is None: vhf = self._get_harris_veff(self.mol)
+            if vhf is None: vhf = self._get_ml_veff(self.mol)
             
             dm_cp = _as_cupy(dm)
             h1e_cp = _as_cupy(h1e)
@@ -124,7 +114,7 @@ class HarrisRKS(rks.RKS):
             return e_elec, self._e_dc_global
         else:
             # Fallback to standard energy evaluation during embedding steps
-            return rks.RKS.energy_elec(self, dm, h1e, vhf)
+            return gpu_hf.RHF.energy_elec(self, dm, h1e, vhf)
 
 
 class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
@@ -139,9 +129,9 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
         """
         Parameters
         ----------
-        mf_outer : HarrisRKS object
+        mf_outer : OneStepRHF object
             The global low-level solver driven by ML density.
-        mf_inner : SCF/DFT/post-HF object
+        mf_inner : SCF/post-HF object
             The high-level solver applied to the embedded fragment+bath cluster.
         fragment : list of int
             List of atom indices defining the core QM region.
@@ -158,7 +148,7 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
             self.mf_outer.kernel()
             
         e_global_low = self.mf_outer.e_tot
-        self.log.note(f"Global Low-Level E (Harris) = {e_global_low:.8f}")
+        self.log.note(f"Global Low-Level E (ML 1-step) = {e_global_low:.8f}")
         
         mo_coeff = _as_cupy(self.mf_outer.mo_coeff)
         mo_occ = _as_cupy(self.mf_outer.mo_occ)
@@ -184,8 +174,7 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
         
         # Precompute the frozen core's 2-electron energy (constant during inner SCF)
         v_eff_core_high = self.mf_inner_template.get_veff(self.full_mol, dm_core_mat)
-        e_coul_core = float(getattr(v_eff_core_high, 'ecoul', 0.0))
-        e_xc_core = float(getattr(v_eff_core_high, 'exc', 0.0))
+        e_2e_core = 0.5 * float(cp.sum(dm_core_mat * v_eff_core_high))
         
         e_nuc_full = float(self.full_mol.energy_nuc())
         mf_inner.energy_nuc = lambda *args, **kwargs: e_nuc_full
@@ -193,7 +182,6 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
         # Override energy_elec to print the true full system energy
         def custom_energy_elec(dm=None, h1e=None, vhf=None):
             if dm is None: dm = mf_inner.make_rdm1()
-            if vhf is None: vhf = mf_inner.get_veff(mf_inner.mol, dm)
             
             dm_cp = _as_cupy(dm)
             
@@ -201,15 +189,14 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
             e1_active = float(cp.sum(dm_cp * h_eval_bare_mat))
             e1 = e1_active + e1_core
             
-            # e2: Full system 2e energy minus core 2e energy
-            ecoul_full = float(getattr(vhf, 'ecoul', 0.0))
-            exc_full = float(getattr(vhf, 'exc', 0.0))
-            e2 = ecoul_full + exc_full
+            # e2: Full system 2e energy for exact HF
+            dm_full_ao = dm_core_mat + B_mat @ dm_cp @ B_mat.T
+            v_eff_full = self.mf_inner_template.get_veff(self.full_mol, dm_full_ao)
+            e2 = 0.5 * float(cp.sum(dm_full_ao * v_eff_full))
             
             # Update scf_summary for meaningful debugging output
             mf_inner.scf_summary['e1'] = e1
-            mf_inner.scf_summary['coul'] = ecoul_full - e_coul_core
-            mf_inner.scf_summary['exc'] = exc_full - e_xc_core
+            mf_inner.scf_summary['e2'] = e2 - e_2e_core
             
             return e1 + e2, e2
             

@@ -18,9 +18,8 @@ import numpy as np
 import cupy as cp
 from pyscf import gto
 from gpu4pyscf.scf import hf as gpu_hf
-from gpu4pyscf.dft import rks
 from gpu4pyscf.qmmm.embedding import embedding
-from gpu4pyscf.qmmm.embedding.embedding_dft import SingleFragmentEmbedding
+from gpu4pyscf.qmmm.embedding.embedding_hf import SingleFragmentEmbedding
 
 
 class KnownValues(unittest.TestCase):
@@ -50,10 +49,10 @@ class KnownValues(unittest.TestCase):
     def tearDownClass(cls):
         del cls.mol
     
-    def test_b3lyp_in_b3lyp(self):
+    def test_hf_in_hf(self):
 
-        mf_outer = rks.RKS(self.mol, xc='B3LYP')
-        mf_inner_template = rks.RKS(self.mol, xc='B3LYP')
+        mf_outer = gpu_hf.RHF(self.mol)
+        mf_inner_template = gpu_hf.RHF(self.mol)
 
         emb_obj = SingleFragmentEmbedding(mf_outer, mf_inner_template, [0, 2, 3, 4])
         emb_obj.kernel()
@@ -62,9 +61,9 @@ class KnownValues(unittest.TestCase):
 
         assert np.abs(e_ref - emb_obj.e_tot) < 1e-8, f"Reference energy {e_ref} != Embedding energy {emb_obj.energy}"
 
-    def test_b3lyp_in_pbe(self):
-        mf_outer = rks.RKS(self.mol, xc='PBE')
-        mf_inner_template = rks.RKS(self.mol, xc='B3LYP')
+    def test_hf_in_hf_full_region(self):
+        mf_outer = gpu_hf.RHF(self.mol)
+        mf_inner_template = gpu_hf.RHF(self.mol)
 
         emb_obj = SingleFragmentEmbedding(mf_outer, mf_inner_template, [i for i in range(8)])
         emb_obj.kernel()
@@ -74,8 +73,8 @@ class KnownValues(unittest.TestCase):
         assert np.abs(e_ref - emb_obj.e_tot) < 1e-8, f"Reference energy {e_ref} != Embedding energy {emb_obj.energy}"
 
     def test_algebraic_properties(self):
-        mf_outer = rks.RKS(self.mol, xc='PBE')
-        mf_inner = rks.RKS(self.mol, xc='PBE')
+        mf_outer = gpu_hf.RHF(self.mol)
+        mf_inner = gpu_hf.RHF(self.mol)
         
         emb_obj = SingleFragmentEmbedding(mf_outer, mf_inner, [0, 1, 2])
         emb_obj.kernel()
@@ -98,8 +97,8 @@ class KnownValues(unittest.TestCase):
                         f"Core DM leaks into Active Space, max error: {max_overlap_err}")
 
     def test_electron_conservation(self):
-        mf_outer = rks.RKS(self.mol, xc='PBE')
-        mf_inner = rks.RKS(self.mol, xc='B3LYP')
+        mf_outer = gpu_hf.RHF(self.mol)
+        mf_inner = gpu_hf.RHF(self.mol)
         emb_obj = SingleFragmentEmbedding(mf_outer, mf_inner, [0, 1])
         emb_obj.kernel()
         
@@ -119,8 +118,8 @@ class KnownValues(unittest.TestCase):
                                msg=f"Electron loss: {n_elec_calc} != {n_elec_exact}")
 
     def test_template_isolation_and_convergence(self):
-        mf_outer = rks.RKS(self.mol, xc='PBE')
-        mf_inner_template = rks.RKS(self.mol, xc='PBE')
+        mf_outer = gpu_hf.RHF(self.mol)
+        mf_inner_template = gpu_hf.RHF(self.mol)
         
         emb_obj = SingleFragmentEmbedding(mf_outer, mf_inner_template, [0, 2, 3, 4], threshold=-1.0)
         emb_obj.kernel()
@@ -160,8 +159,8 @@ class KnownValues(unittest.TestCase):
         mol.verbose = 0
         mol.build()
 
-        mf_outer = rks.RKS(mol, xc='PBE')
-        mf_inner = rks.RKS(mol, xc='PBE')
+        mf_outer = gpu_hf.RHF(mol)
+        mf_inner = gpu_hf.RHF(mol)
         
         methyl_fragment = [0, 6, 7, 8]
         emb_obj = SingleFragmentEmbedding(mf_outer, mf_inner, methyl_fragment, threshold=1e-5)
@@ -171,25 +170,25 @@ class KnownValues(unittest.TestCase):
         e_global = mf_outer.e_tot
         e_embedded = emb_obj.e_tot
         self.assertTrue(np.abs(e_global - e_embedded) < 1e-6, 
-                        f"PBE-in-PBE Exactness failed! Error: {np.abs(e_global - e_embedded)}")
+                        f"HF-in-HF Exactness failed! Error: {np.abs(e_global - e_embedded)}")
         
         dm_core_sum = float(cp.sum(emb_obj.dm_core[0]))
         self.assertTrue(dm_core_sum > 1.0, 
                         "Hexane test did not generate a non-trivial Core DM. SVD truncation might be failing.")
 
-    def test_pure_dft_vk_bypass(self):
-        mf_outer = rks.RKS(self.mol, xc='PBE')
-        mf_inner = rks.RKS(self.mol, xc='PBE')
+    def test_hf_embedding_run(self):
+        mf_outer = gpu_hf.RHF(self.mol)
+        mf_inner = gpu_hf.RHF(self.mol)
         
         emb_obj = SingleFragmentEmbedding(mf_outer, mf_inner, self.fragments[0])
         try:
             emb_obj.kernel()
         except AttributeError as e:
-            self.fail(f"Embedding failed for Pure DFT due to missing vk attribute: {e}")
+            self.fail(f"Embedding failed for HF: {e}")
             
-        self.assertTrue(emb_obj.e_tot is not None, "Pure DFT embedding failed to return an energy.")
+        self.assertTrue(emb_obj.e_tot is not None, "HF embedding failed to return an energy.")
 
 
 if __name__ == '__main__':
-    print("Full Tests for ONIOM-like DFT embedding.")
+    print("Full Tests for ONIOM-like HF embedding.")
     unittest.main()

@@ -21,7 +21,7 @@ from gpu4pyscf.qmmm.embedding.embedding import DMET, lowdin_orth, _as_cupy
 
 class SingleFragmentEmbedding(DMET):
     """
-    Single-Fragment ONIOM-like embedding for DFT.
+    Single-Fragment ONIOM-like embedding for HF (Hartree-Fock).
     
     This class performs a single-shot,
     single-fragment delta-method energy evaluation WITHOUT macroscopic iterations.
@@ -32,9 +32,9 @@ class SingleFragmentEmbedding(DMET):
         Parameters
        -------
         mf_outer : SCF object
-            Low-level mean-field on the full system (e.g., PBE).
-        mf_inner : SCF/DFT/post-HF object
-            High-level template applied to the embedded cluster (e.g., B3LYP).
+            Low-level mean-field on the full system (e.g., HF).
+        mf_inner : SCF/post-HF object
+            High-level template applied to the embedded cluster (e.g., HF).
         fragment : list of int
             A single list of atom indices defining the QM region.
         threshold : float
@@ -53,7 +53,8 @@ class SingleFragmentEmbedding(DMET):
         dm_full_ao = dm_core + B @ dm_emb @ B.T
         
         v_eff_full = mf_obj.get_veff(self.full_mol, dm_full_ao)
-        e_2e_full = float(getattr(v_eff_full, 'ecoul', 0.0) + getattr(v_eff_full, 'exc', 0.0))
+        # Evaluate exact HF 2-electron energy: 1/2 * Tr(D * V_eff)
+        e_2e_full = 0.5 * float(cp.sum(dm_full_ao * v_eff_full))
         
         hcore_orig = _as_cupy(self.mf_outer.get_hcore())
         e_1e_core = float(cp.sum(dm_core * hcore_orig))
@@ -91,8 +92,7 @@ class SingleFragmentEmbedding(DMET):
         
         # Precompute the frozen core's 2-electron energy (constant during inner SCF)
         v_eff_core_high = self.mf_inner_template.get_veff(self.full_mol, dm_core_mat)
-        e_coul_core = float(getattr(v_eff_core_high, 'ecoul', 0.0))
-        e_xc_core = float(getattr(v_eff_core_high, 'exc', 0.0))
+        e_2e_core = 0.5 * float(cp.sum(dm_core_mat * v_eff_core_high))
         
         e_nuc_full = float(self.full_mol.energy_nuc())
         mf_inner.energy_nuc = lambda *args, **kwargs: e_nuc_full
@@ -100,7 +100,6 @@ class SingleFragmentEmbedding(DMET):
         # Override energy_elec to print the true ONIOM energy difference
         def custom_energy_elec(dm=None, h1e=None, vhf=None):
             if dm is None: dm = mf_inner.make_rdm1()
-            if vhf is None: vhf = mf_inner.get_veff(mf_inner.mol, dm)
             
             dm_cp = _as_cupy(dm)
             
@@ -108,15 +107,15 @@ class SingleFragmentEmbedding(DMET):
             e1_active = float(cp.sum(dm_cp * h_eval_bare_mat))
             e1 = e1_active + e1_core
             
-            # e2: Full system 2e energy minus core 2e energy
-            ecoul_full = float(getattr(vhf, 'ecoul', 0.0))
-            exc_full = float(getattr(vhf, 'exc', 0.0))
-            e2 = ecoul_full + exc_full
+            # e2: Full system 2e energy
+            # For HF, we evaluate full vhf explicitly to get the exact 2e energy Tr(D * V)
+            dm_full_ao = dm_core_mat + B_mat @ dm_cp @ B_mat.T
+            v_eff_full = self.mf_inner_template.get_veff(self.full_mol, dm_full_ao)
+            e2 = 0.5 * float(cp.sum(dm_full_ao * v_eff_full))
             
             # Update scf_summary for meaningful PySCF debugging output
             mf_inner.scf_summary['e1'] = e1
-            mf_inner.scf_summary['coul'] = ecoul_full - e_coul_core
-            mf_inner.scf_summary['exc'] = exc_full - e_xc_core
+            mf_inner.scf_summary['e2'] = e2 - e_2e_core
             
             return e1 + e2, e2
             
