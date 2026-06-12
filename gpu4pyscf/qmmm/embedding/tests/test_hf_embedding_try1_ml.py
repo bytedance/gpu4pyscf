@@ -18,7 +18,7 @@ import cupy as cp
 from pyscf import gto
 from gpu4pyscf.scf import hf as gpu_hf
 from gpu4pyscf.qmmm.embedding.embedding_hf import SingleFragmentEmbedding
-from gpu4pyscf.qmmm.embedding.embedding_hf_harris import OneStepRHF, SingleFragmentEmbedding_ML
+from gpu4pyscf.qmmm.embedding.embedding_hf_try1_ml import OneStepRHF, SingleFragmentEmbedding_ML
 
 
 def dummy_eval_density_func(mol, xc, grids):

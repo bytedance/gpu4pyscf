@@ -21,10 +21,10 @@ from gpu4pyscf.qmmm.embedding.embedding import DMET, lowdin_orth, _as_cupy
 
 class SingleFragmentEmbedding(DMET):
     """
-    Single-Fragment ONIOM-like embedding for HF (Hartree-Fock).
+    Single-Fragment strict subspace variational embedding for HF (CAS-like).
     
     This class performs a single-shot,
-    single-fragment delta-method energy evaluation WITHOUT macroscopic iterations.
+    single-fragment exact subspace energy evaluation WITHOUT ONIOM correction.
     """
     
     def __init__(self, mf_outer, mf_inner, fragment, threshold=1e-5, verbose=None):
@@ -130,7 +130,7 @@ class SingleFragmentEmbedding(DMET):
             )
         
         dm_emb_high = _as_cupy(mf_inner.make_rdm1())
-        dm_emb_low = self.dm_emb_init[ifrag]
+        # dm_emb_low is no longer needed since we skip the ONIOM correction
         
         B = self.B[ifrag]
         dm_core = self.dm_core[ifrag]
@@ -139,23 +139,21 @@ class SingleFragmentEmbedding(DMET):
         if is_mean_field:
             h_eval_bare = B.T @ hcore_orig @ B
             
-            # Evaluate High-Level energy
+            # Evaluate High-Level energy. This already includes E_core + E_active
+            # and is the exact total HF energy of the subspace-optimized density!
             e_high = self._evaluate_embedded_energy(
                 self.mf_inner_template, dm_emb_high, h_eval_bare, B, dm_core
             )
             
-            # Evaluate Low-Level energy
-            e_low = self._evaluate_embedded_energy(
-                self.mf_outer, dm_emb_low, h_eval_bare, B, dm_core
-            )
+            # [REMOVED]: Evaluation of e_low and ONIOM delta correction
+            
         else:
             raise NotImplementedError("WFT evaluation is not implemented for this class.")
         
-        delta_e = float(e_high - e_low)
         self.log.note(f"Global Low-Level E : {e_global_low:.8f}")
-        self.log.note(f"Active Space dE    : {delta_e:.8f}")
         
-        self.e_tot = e_global_low + delta_e
-        self.log.note(f"Total Embedded E   : {self.e_tot:.8f}")
+        # The total energy is now strictly the subspace variational minimum
+        self.e_tot = float(e_high)
+        self.log.note(f"Total Embedded E (CAS-like) : {self.e_tot:.8f}")
         
         return self.e_tot

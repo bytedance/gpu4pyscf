@@ -19,7 +19,7 @@ import cupy as cp
 from pyscf import gto
 from gpu4pyscf.scf import hf as gpu_hf
 from gpu4pyscf.qmmm.embedding import embedding
-from gpu4pyscf.qmmm.embedding.embedding_hf import SingleFragmentEmbedding
+from gpu4pyscf.qmmm.embedding.embedding_hf_try1 import SingleFragmentEmbedding
 
 
 class KnownValues(unittest.TestCase):
@@ -59,7 +59,7 @@ class KnownValues(unittest.TestCase):
 
         e_ref = mf_outer.kernel()
 
-        assert np.abs(e_ref - emb_obj.e_tot) < 1e-8, f"Reference energy {e_ref} != Embedding energy {emb_obj.energy}"
+        assert np.abs(e_ref - emb_obj.e_tot) < 1e-8, f"Reference energy {e_ref} != Embedding energy {emb_obj.e_tot}"
 
     def test_hf_in_hf_full_region(self):
         mf_outer = gpu_hf.RHF(self.mol)
@@ -70,7 +70,7 @@ class KnownValues(unittest.TestCase):
 
         e_ref = mf_inner_template.kernel()
 
-        assert np.abs(e_ref - emb_obj.e_tot) < 1e-8, f"Reference energy {e_ref} != Embedding energy {emb_obj.energy}"
+        assert np.abs(e_ref - emb_obj.e_tot) < 1e-8, f"Reference energy {e_ref} != Embedding energy {emb_obj.e_tot}"
 
     def test_algebraic_properties(self):
         mf_outer = gpu_hf.RHF(self.mol)
@@ -190,5 +190,6 @@ class KnownValues(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    print("Full Tests for ONIOM-like HF embedding.")
+    # Updated the print statement to reflect the new CAS-like variational physics
+    print("Full Tests for CAS-like strict subspace HF embedding.")
     unittest.main()

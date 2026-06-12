@@ -18,7 +18,7 @@ from pyscf import lib
 from gpu4pyscf.scf import hf as gpu_hf
 from gpu4pyscf.lib.cupy_helper import tag_array
 from gpu4pyscf.qmmm.embedding.embedding import DMET, lowdin_orth, _as_cupy
-from gpu4pyscf.qmmm.embedding.embedding_dft import SingleFragmentEmbedding
+from gpu4pyscf.qmmm.embedding.embedding_hf_try1 import SingleFragmentEmbedding
 
 
 class OneStepRHF(gpu_hf.RHF):
@@ -119,11 +119,10 @@ class OneStepRHF(gpu_hf.RHF):
 
 class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
     """
-    Single-Fragment ONIOM-like embedding utilizing ML density for the global low-level.
+    Single-Fragment strict subspace variational embedding utilizing ML density.
     
     This class performs DMET bond-breaking via SVD, and evaluates the local embedded 
-    energies using rigorous standard SCF evaluations to guarantee exact error cancellation 
-    between the high-level and low-level local calculations.
+    energies using a CAS-like variational approach without ONIOM correction.
     """
     def __init__(self, mf_outer, mf_inner, fragment, threshold=1e-5, verbose=None):
         """
@@ -148,7 +147,7 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
             self.mf_outer.kernel()
             
         e_global_low = self.mf_outer.e_tot
-        self.log.note(f"Global Low-Level E (ML 1-step) = {e_global_low:.8f}")
+        self.log.note(f"Global Low-Level E (ML input) = {e_global_low:.8f}")
         
         mo_coeff = _as_cupy(self.mf_outer.mo_coeff)
         mo_occ = _as_cupy(self.mf_outer.mo_occ)
@@ -210,7 +209,7 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
             )
         
         dm_emb_high = _as_cupy(mf_inner.make_rdm1())
-        dm_emb_low = self.dm_emb_init[ifrag]
+        # dm_emb_low is no longer needed since we skip the ONIOM correction
         
         B = self.B[ifrag]
         dm_core = self.dm_core[ifrag]
@@ -219,24 +218,18 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
         if is_mean_field:
             h_eval_bare = B.T @ hcore_orig @ B
             
+            # Evaluate High-Level energy. This is E_core + E_active directly!
             e_high = self._evaluate_embedded_energy(
                 self.mf_inner_template, dm_emb_high, h_eval_bare, B, dm_core
             )
-            self.log.note(f"High-Level E : {e_high:.8f}")
             
-            # Evaluate Low-Level energy (mf_outer will automatically use exact get_veff for xc here)
-            e_low = self._evaluate_embedded_energy(
-                self.mf_outer, dm_emb_low, h_eval_bare, B, dm_core
-            )
-            self.log.note(f"Low-Level E : {e_low:.8f}")
+            # [REMOVED]: Evaluation of e_low and ONIOM delta correction
+
         else:
             raise NotImplementedError("WFT evaluation is not implemented for this class.")
         
-        delta_e = float(e_high - e_low)
-        self.log.note(f"Global Low-Level E : {e_global_low:.8f}")
-        self.log.note(f"Active Space dE    : {delta_e:.8f}")
-        
-        self.e_tot = e_global_low + delta_e
-        self.log.note(f"Total Embedded E   : {self.e_tot:.8f}")
+        # The total energy is strictly the subspace variational minimum
+        self.e_tot = float(e_high)
+        self.log.note(f"Total Embedded E (CAS-like) : {self.e_tot:.8f}")
         
         return self.e_tot
