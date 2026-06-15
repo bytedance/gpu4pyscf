@@ -52,7 +52,10 @@ class SingleFragmentEmbedding(DMET):
         
         dm_full_ao = dm_core + B @ dm_emb @ B.T
         
+        direct_scf_bak = getattr(mf_obj, 'direct_scf', True)
+        mf_obj.direct_scf = False
         v_eff_full = mf_obj.get_veff(self.full_mol, dm_full_ao)
+        mf_obj.direct_scf = direct_scf_bak
         # Evaluate exact HF 2-electron energy: 1/2 * Tr(D * V_eff)
         e_2e_full = 0.5 * float(cp.sum(dm_full_ao * v_eff_full))
         

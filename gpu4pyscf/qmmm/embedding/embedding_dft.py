@@ -52,7 +52,10 @@ class SingleFragmentEmbedding(DMET):
         
         dm_full_ao = dm_core + B @ dm_emb @ B.T
         
+        direct_scf_bak = getattr(mf_obj, 'direct_scf', True)
+        mf_obj.direct_scf = False
         v_eff_full = mf_obj.get_veff(self.full_mol, dm_full_ao)
+        mf_obj.direct_scf = direct_scf_bak
         e_2e_full = float(getattr(v_eff_full, 'ecoul', 0.0) + getattr(v_eff_full, 'exc', 0.0))
         
         hcore_orig = _as_cupy(self.mf_outer.get_hcore())
