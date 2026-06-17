@@ -19,9 +19,7 @@ from pyscf import gto
 from gpu4pyscf.scf import hf as gpu_hf
 from gpu4pyscf.dft import rks
 from gpu4pyscf.qmmm.embedding import embedding
-
-# NOTE: Import your newly implemented CAS-like DFT embedding class here
-from gpu4pyscf.qmmm.embedding.embedding_dft_cas import SingleFragmentEmbedding
+from gpu4pyscf.qmmm.embedding.embedding_dft_try1 import SingleFragmentEmbedding
 
 
 class KnownValues(unittest.TestCase):
@@ -59,8 +57,6 @@ class KnownValues(unittest.TestCase):
 
         e_ref = mf_outer.kernel()
 
-        # For B3LYP-in-B3LYP, the hybrid XC potential perfectly reduces to B3LYP.
-        # Starting from converged outer density, the subspace variation should yield exactly the same energy.
         self.assertTrue(np.abs(e_ref - emb_obj.e_tot) < 1e-6, 
                         f"Reference energy {e_ref} != Embedding energy {emb_obj.e_tot}")
 
@@ -68,9 +64,6 @@ class KnownValues(unittest.TestCase):
         mf_outer = rks.RKS(self.mol, xc='PBE')
         mf_inner_template = rks.RKS(self.mol, xc='B3LYP')
 
-        # When the active space covers the ENTIRE molecule, D_core = 0.
-        # The hybrid XC potential: V_PBE + V_B3LYP - V_PBE exactly equals V_B3LYP.
-        # Thus, the embedded calculation MUST perfectly match a full B3LYP calculation.
         emb_obj = SingleFragmentEmbedding(mf_outer, mf_inner_template, [i for i in range(8)])
         emb_obj.kernel()
 
@@ -177,9 +170,6 @@ class KnownValues(unittest.TestCase):
         e_global = mf_outer.e_tot
         e_embedded = emb_obj.e_tot
 
-        # For PBE-in-PBE, the hybrid XC potential is exact PBE. Since we start from 
-        # the globally converged PBE density, subspace variation yields zero gradient.
-        # Thus, the embedded energy MUST exactly match the global PBE energy.
         self.assertTrue(np.abs(e_global - e_embedded) < 1e-6, 
                         f"PBE-in-PBE Exactness failed! Error: {np.abs(e_global - e_embedded)}")
         
