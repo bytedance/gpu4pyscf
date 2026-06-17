@@ -21,9 +21,11 @@ from gpu4pyscf.qmmm.embedding.embedding import DMET, lowdin_orth, _as_cupy
 from gpu4pyscf.qmmm.embedding.embedding_dft import SingleFragmentEmbedding
 
 
-class HarrisRKS(rks.RKS):
+# TODO: this class is almost the same as HarrisRKS, with a different name.
+#       We should merge them in the future.
+class OneStepRKS(rks.RKS):
     """
-    Harris RKS class based on machine learning (ML) predicted density.
+    One-step RKS class based on machine learning (ML) predicted density.
     
     This class bypasses traditional SCF iterations. Instead, it relies entirely 
     on an external ML density evaluation function to construct the global effective 
@@ -82,7 +84,7 @@ class HarrisRKS(rks.RKS):
 
     def kernel(self, dm0=None, **kwargs):
         if self.max_cycle != 1:
-            lib.logger.warn(self, "HarrisRKS is a non-iterative method. "
+            lib.logger.warn(self, "OneStepRKS is a non-iterative method. "
                                   f"Overriding max_cycle from {self.max_cycle} to 1.")
             self.max_cycle = 1
 
@@ -120,7 +122,7 @@ class HarrisRKS(rks.RKS):
 
 class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
     """
-    Single-Fragment strict subspace variational embedding utilizing ML density.
+    Single-Fragment subspace variational embedding utilizing ML density.
     
     This class performs DMET bond-breaking via SVD, and evaluates the local embedded 
     energies using a CAS-like variational approach without ONIOM correction, explicitly
@@ -130,7 +132,7 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
         """
         Parameters
         ----------
-        mf_outer : HarrisRKS object
+        mf_outer : OneStepRKS object
             The global low-level solver driven by ML density.
         mf_inner : rks.RKS object
             The high-level DFT solver applied to the embedded fragment+bath cluster.
@@ -180,6 +182,41 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
         
         e_nuc_full = float(self.full_mol.energy_nuc())
         mf_inner.energy_nuc = lambda *args, **kwargs: e_nuc_full
+
+        # Override get_veff for strictly CAS-like Hybrid XC potential evaluation
+        def custom_hybrid_get_veff(mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
+            if dm is None: dm = mf_inner.make_rdm1()
+            dm_cp = _as_cupy(dm)
+            
+            dm_act_ao = B_mat @ dm_cp @ B_mat.T
+            dm_full_ao = dm_core_mat + dm_act_ao
+            
+            direct_scf_bak = getattr(self.mf_outer, 'direct_scf', True)
+            self.mf_outer.direct_scf = False
+            v_low_full = self.mf_outer.get_veff(self.full_mol, dm_full_ao)
+            v_low_act = self.mf_outer.get_veff(self.full_mol, dm_act_ao)
+            self.mf_outer.direct_scf = direct_scf_bak
+            
+            direct_scf_bak_high = getattr(self.mf_inner_template, 'direct_scf', True)
+            self.mf_inner_template.direct_scf = False
+            v_high_act = self.mf_inner_template.get_veff(self.full_mol, dm_act_ao)
+            self.mf_inner_template.direct_scf = direct_scf_bak_high
+            
+            # Hybrid effective potential construction
+            # Note: self.v_core_ao[ifrag] (low-level core Veff) is subtracted to isolate the active field
+            v_eff_active = _as_cupy(v_low_full) + _as_cupy(v_high_act) - _as_cupy(v_low_act) - self.v_core_ao[ifrag]
+            
+            if dm_cp.ndim == 2:
+                v_eff_emb = B_mat.T @ v_eff_active @ B_mat
+            else:
+                v_eff_emb = cp.einsum('pi,xpq,qj->xij', B_mat, v_eff_active, B_mat)
+            
+            ecoul = float(getattr(v_low_full, 'ecoul', 0.0))
+            exc = float(getattr(v_low_full, 'exc', 0.0)) + float(getattr(v_high_act, 'exc', 0.0)) - float(getattr(v_low_act, 'exc', 0.0))
+            
+            return tag_array(v_eff_emb, ecoul=ecoul, exc=exc)
+
+        mf_inner.get_veff = custom_hybrid_get_veff
         
         # Override energy_elec to print the true full system energy using CAS-like formulation
         def custom_energy_elec(dm=None, h1e=None, vhf=None):

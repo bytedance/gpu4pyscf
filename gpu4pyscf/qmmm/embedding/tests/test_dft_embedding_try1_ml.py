@@ -19,7 +19,7 @@ from pyscf import gto
 from gpu4pyscf.dft import rks
 
 from gpu4pyscf.qmmm.embedding.embedding_dft_try1 import SingleFragmentEmbedding
-from gpu4pyscf.qmmm.embedding.embedding_dft_try1_ml import HarrisRKS, SingleFragmentEmbedding_ML
+from gpu4pyscf.qmmm.embedding.embedding_dft_try1_ml import OneStepRKS, SingleFragmentEmbedding_ML
 
 
 def dummy_eval_density_func(mol, xc, grids):
@@ -91,17 +91,17 @@ class TestMLEmbeddingCAS(unittest.TestCase):
         mf_ref.conv_tol = 1.0E-12
         e_ref = mf_ref.kernel()
 
-        mf_harris = HarrisRKS(self.mol, dummy_eval_density_func, xc='PBE')
+        mf_harris = OneStepRKS(self.mol, dummy_eval_density_func, xc='PBE')
         mf_harris.verbose = 0
         e_harris = mf_harris.kernel()
 
         self.assertAlmostEqual(e_ref, e_harris, places=8, 
-                               msg=f"HarrisRKS energy {e_harris} differs from exact RKS {e_ref}")
+                               msg=f"OneStepRKS energy {e_harris} differs from exact RKS {e_ref}")
 
     def test_full_system_pbe_in_pbe(self):
         # When QM covers the whole system, the CAS-DFT calculation must rigorously 
         # return the exact full PBE energy without relying on any macroscopic delta cancellations.
-        mf_outer = HarrisRKS(self.mol, dummy_eval_density_func, xc='PBE')
+        mf_outer = OneStepRKS(self.mol, dummy_eval_density_func, xc='PBE')
         mf_inner = rks.RKS(self.mol, xc='PBE')
         mf_inner.conv_tol = 1.0E-12
         
@@ -125,7 +125,7 @@ class TestMLEmbeddingCAS(unittest.TestCase):
         e_std = emb_std.kernel()
 
         # ML-driven CAS-like embedding (Harris 1-step outer)
-        mf_outer_ml = HarrisRKS(self.mol, dummy_eval_density_func, xc='PBE')
+        mf_outer_ml = OneStepRKS(self.mol, dummy_eval_density_func, xc='PBE')
         mf_inner_ml = rks.RKS(self.mol, xc='B3LYP')
         mf_inner_ml.conv_tol = 1.0E-12
         emb_ml = SingleFragmentEmbedding_ML(mf_outer_ml, mf_inner_ml, self.methyl_fragment, verbose=0)
@@ -135,16 +135,16 @@ class TestMLEmbeddingCAS(unittest.TestCase):
         self.assertAlmostEqual(e_std, e_ml, places=8, 
                                msg=f"ML CAS-like Embedding {e_ml} diverged from Standard CAS-like Embedding {e_std}!")
 
-    def test_harris_max_cycle_override(self):
-        mf_harris = HarrisRKS(self.mol, dummy_eval_density_func, xc='PBE')
+    def test_one_step_rks_max_cycle_override(self):
+        mf_harris = OneStepRKS(self.mol, dummy_eval_density_func, xc='PBE')
         mf_harris.max_cycle = 100 
         mf_harris.verbose = 0
         
         mf_harris.kernel()
         
         self.assertEqual(mf_harris.max_cycle, 1, 
-                         "HarrisRKS failed to override malicious max_cycle setting!")
+                         "OneStepRKS failed to override malicious max_cycle setting!")
 
 if __name__ == '__main__':
-    print("Full Tests for ML-Driven CAS-like strict subspace DFT embedding...")
+    print("Full Tests for ML-Driven CAS-like subspace DFT embedding...")
     unittest.main()
