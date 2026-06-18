@@ -18,7 +18,7 @@ from pyscf import lib
 from gpu4pyscf.dft import rks
 from gpu4pyscf.lib.cupy_helper import tag_array
 from gpu4pyscf.qmmm.embedding.embedding import DMET, lowdin_orth, _as_cupy
-from gpu4pyscf.qmmm.embedding.embedding_dft import SingleFragmentEmbedding
+from gpu4pyscf.qmmm.embedding.embedding_dft_try1 import SingleFragmentEmbedding
 
 
 # TODO: this class is almost the same as HarrisRKS, with a different name.
@@ -175,11 +175,6 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
         # Add the missing core 1-electron energy
         e1_core = float(cp.sum(dm_core_mat * hcore_orig))
         
-        # Precompute the frozen core's 2-electron DFT energy (constant during inner SCF)
-        v_eff_core_high = self.mf_inner_template.get_veff(self.full_mol, dm_core_mat)
-        e_coul_core = float(getattr(v_eff_core_high, 'ecoul', 0.0))
-        e_xc_core = float(getattr(v_eff_core_high, 'exc', 0.0))
-        
         e_nuc_full = float(self.full_mol.energy_nuc())
         mf_inner.energy_nuc = lambda *args, **kwargs: e_nuc_full
 
@@ -222,24 +217,24 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
         def custom_energy_elec(dm=None, h1e=None, vhf=None):
             if dm is None: dm = mf_inner.make_rdm1()
             
+            # Use the 'vhf' that is passed in, which has been evaluated by our custom_hybrid_get_veff!
+            if vhf is None: vhf = mf_inner.get_veff(mf_inner.mol, dm)
+            
             dm_cp = _as_cupy(dm)
             
             # e1: Active space single-electron energy + Core single-electron energy
             e1_active = float(cp.sum(dm_cp * h_eval_bare_mat))
             e1 = e1_active + e1_core
             
-            # e2: Full system 2e energy for exact DFT (Coulomb + XC computed on full density)
-            dm_full_ao = dm_core_mat + B_mat @ dm_cp @ B_mat.T
-            v_eff_full = self.mf_inner_template.get_veff(self.full_mol, dm_full_ao)
-            
-            ecoul_full = float(getattr(v_eff_full, 'ecoul', 0.0))
-            exc_full = float(getattr(v_eff_full, 'exc', 0.0))
-            e2 = ecoul_full + exc_full
+            # e2: Directly use the exact hybrid 2e energy from our custom get_veff!
+            ecoul_full = float(getattr(vhf, 'ecoul', 0.0))
+            exc_hybrid = float(getattr(vhf, 'exc', 0.0))
+            e2 = ecoul_full + exc_hybrid
             
             # Update scf_summary for meaningful debugging output relative to the core
             mf_inner.scf_summary['e1'] = e1
-            mf_inner.scf_summary['coul'] = ecoul_full - e_coul_core
-            mf_inner.scf_summary['exc'] = exc_full - e_xc_core
+            mf_inner.scf_summary['coul'] = ecoul_full
+            mf_inner.scf_summary['exc'] = exc_hybrid
             
             return e1 + e2, e2
             
@@ -262,11 +257,9 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
         if is_mean_field:
             h_eval_bare = B.T @ hcore_orig @ B
             
-            # Evaluate High-Level energy. This evaluates E_core + E_active perfectly 
-            # including the full non-linear V_xc(D_core + D_active)
-            e_high = self._evaluate_embedded_energy(
-                self.mf_inner_template, dm_emb_high, h_eval_bare, B, dm_core
-            )
+            # Evaluate High-Level energy using our explicitly defined Hybrid function
+            # TODO: this can be optimized by reusing the results from the inner SCF evaluation
+            e_high = self._evaluate_embedded_energy(dm_emb_high, h_eval_bare, B, dm_core)
         else:
             raise NotImplementedError("WFT evaluation is not implemented for this class.")
         

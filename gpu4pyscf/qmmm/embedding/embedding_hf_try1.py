@@ -93,10 +93,6 @@ class SingleFragmentEmbedding(DMET):
         # Add the missing core 1-electron energy (kinetic + nuclear attraction from the frozen core)
         e1_core = float(cp.sum(dm_core_mat * hcore_orig))
         
-        # Precompute the frozen core's 2-electron energy (constant during inner SCF)
-        v_eff_core_high = self.mf_inner_template.get_veff(self.full_mol, dm_core_mat)
-        e_2e_core = 0.5 * float(cp.sum(dm_core_mat * v_eff_core_high))
-        
         e_nuc_full = float(self.full_mol.energy_nuc())
         mf_inner.energy_nuc = lambda *args, **kwargs: e_nuc_full
         
@@ -118,7 +114,7 @@ class SingleFragmentEmbedding(DMET):
             
             # Update scf_summary for meaningful PySCF debugging output
             mf_inner.scf_summary['e1'] = e1
-            mf_inner.scf_summary['e2'] = e2 - e_2e_core
+            mf_inner.scf_summary['e2'] = e2
             
             return e1 + e2, e2
             

@@ -146,5 +146,5 @@ class TestMLEmbeddingCAS(unittest.TestCase):
                          "OneStepRKS failed to override malicious max_cycle setting!")
 
 if __name__ == '__main__':
-    print("Full Tests for ML-Driven CAS-like subspace DFT embedding...")
+    print("Full Tests for ML-Driven CAS-like strict subspace DFT embedding...")
     unittest.main()
