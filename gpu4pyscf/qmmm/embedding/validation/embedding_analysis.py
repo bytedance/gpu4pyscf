@@ -208,34 +208,13 @@ def core_homo_lumo(mf_inner):
 # ---------------------------------------------------------------------------
 # Local excited states: TDA via explicit assembly of the A matrix
 # ---------------------------------------------------------------------------
-def build_tda_amatrix(mf_outer, mo_coeff_ao, mo_energy, mo_occ, singlet=True):
+def build_tda_amatrix(mf_outer, mf_inner, mo_coeff_ao, mo_energy, mo_occ, singlet=True):
     r"""Assemble the TDA *A* matrix in the AO-projected MO basis and diagonalise.
 
-    The cluster orbitals enter through their AO-basis coefficients
-    ``mo_coeff_ao = B @ C_emb`` (the caller is responsible for the projection;
-    a dimension guard enforces it).  The response kernel of the *global*
-    low-level solver provides the two-electron coupling:
-
-    1. Build occ/vir AO coefficient blocks ``C_occ_AO``, ``C_vir_AO``.
-    2. Transition densities ``P_trans[i,a] = einsum('uj,vb->jbuv', C_occ, C_vir)``
-       (one AO-basis density matrix per ia pair).
-    3. ``V_resp = mf_outer.gen_response(singlet=True, hermi=0)(P_trans)``.
-    4. Contract back to MO: ``K_iajb = C_occ^T V_resp[jb] C_vir``.
-    5. ``A_iajb = (eps_a - eps_i) delta_ij delta_ab + K_iajb``.
-
-    Parameters
-    ----------
-    mf_outer : the global low-level SCF object exposing ``gen_response``.
-    mo_coeff_ao : (N_AO, N_mo) array
-        Cluster MO coefficients already projected to the AO basis.
-    mo_energy : (N_mo,) array
-    mo_occ : (N_mo,) array
-    singlet : bool
-
-    Returns
-    -------
-    dict with ``excitation_energies`` (sorted, Hartree), ``a_matrix`` (numpy),
-    ``nocc``, ``nvir``.
+    Instead of relying on gen_response or explicitly building the O(N^4) ERI
+    tensor (which causes OOM), we batch the transition density matrices and pass 
+    them to mf_outer.get_jk. The DFT XC responses for the active subspace are 
+    computed block-by-block on the grid using the INNER functional's parameters.
     """
     nao = int(mf_outer.mol.nao_nr())
     mo_coeff_ao = as_backend(mo_coeff_ao, cp.zeros(1))
@@ -252,33 +231,152 @@ def build_tda_amatrix(mf_outer, mo_coeff_ao, mo_energy, mo_occ, singlet=True):
         return {"excitation_energies": [], "a_matrix": np.zeros((0, 0)),
                 "nocc": int(nocc), "nvir": int(nvir)}
 
-    C_occ = mo_coeff_ao[:, as_backend(occ_idx, mo_coeff_ao)]
-    C_vir = mo_coeff_ao[:, as_backend(vir_idx, mo_coeff_ao)]
+    C_occ = mo_coeff_ao[:, occ_idx]
+    C_vir = mo_coeff_ao[:, vir_idx]
 
-    # Transition density matrices, one (N_AO, N_AO) block per (i,a) pair.
-    # einsum('uj,vb->jbuv', C_occ, C_vir) -> shape (nocc, nvir, nao, nao)
-    P_trans = cp.einsum('uj,vb->jbuv', C_occ, C_vir)
-    assert P_trans.shape == (nocc, nvir, nao, nao), (
-        "transition density block must be (nocc, nvir, N_AO, N_AO); got "
-        f"{tuple(P_trans.shape)}")
-    dms = P_trans.reshape(nocc * nvir, nao, nao)
+    e_ia = mo_energy_h[vir_idx] - mo_energy_h[occ_idx, None]
+    a = cp.diag(e_ia.ravel()).reshape(nocc, nvir, nocc, nvir)
 
-    vresp = mf_outer.gen_response(singlet=singlet, hermi=0)
-    v1ao = vresp(dms)                       # (nocc*nvir, N_AO, N_AO)
-    v1ao = as_backend(v1ao, mo_coeff_ao).reshape(nocc, nvir, nao, nao)
+    mol = mf_outer.mol
+    from gpu4pyscf import scf
 
-    # Contract response potential back onto the active occ/vir orbitals:
-    # K_{ia,jb} = C_occ_i^T V_resp[jb] C_vir_a
-    K = cp.einsum('ui,jbuv,va->iajb', C_occ, v1ao, C_vir)
-    K = to_numpy(K).reshape(nocc * nvir, nocc * nvir)
+    def add_hf_(a_mat, hyb=1.0):
+        n_ex = nocc * nvir
+        batch_size = 128  # Safe batch size to prevent OOM
+        
+        # Batch over all (j, b) transition pairs
+        for p0 in range(0, n_ex, batch_size):
+            p1 = min(n_ex, p0 + batch_size)
+            n_batch = p1 - p0
+            
+            dms = cp.empty((n_batch, nao, nao))
+            for k in range(n_batch):
+                idx = p0 + k
+                j = idx // nvir
+                b = idx % nvir
+                # Transition density matrix P[j,b] = C_j * C_b^T
+                dms[k] = cp.outer(C_occ[:, j], C_vir[:, b])
+                
+            # Utilize global optimized JK builder for integration
+            vj, vk = mf_outer.get_jk(mol, dms, hermi=0)
+            
+            if singlet:
+                v_resp = 2.0 * vj
+            else:
+                v_resp = cp.zeros_like(vj)
+                
+            if hyb != 0:
+                v_resp -= hyb * vk
+                
+            # Contract V_resp with C_occ and C_vir to get A matrix slice
+            tmp = cp.tensordot(v_resp, C_vir, axes=([2], [0]))  
+            tmp2 = cp.tensordot(tmp, C_occ, axes=([1], [0]))    
+            batch_A = tmp2.transpose(0, 2, 1)                   
+            
+            for k in range(n_batch):
+                idx = p0 + k
+                j = idx // nvir
+                b = idx % nvir
+                a_mat[:, :, j, b] += batch_A[k]
 
-    e_ia = (mo_energy_h[vir_idx][None, :] - mo_energy_h[occ_idx][:, None]).ravel()
-    A = K + np.diag(e_ia)
-    A = 0.5 * (A + A.T)                      # symmetrise against round-off
+    if isinstance(mf_inner, scf.hf.KohnShamDFT):
+        grids = mf_outer.grids  # Keep global outer grids for spatial integration
+        ni = mf_inner._numint   # USE INNER functional evaluator
+        xc = mf_inner.xc        # USE INNER xc name
+        omega, alpha, hyb = ni.rsh_and_hybrid_coeff(xc, mol.spin)
 
-    w = np.linalg.eigvalsh(A)
+        # 1. Add exact exchange / Coulomb components using INNER hyb
+        add_hf_(a, hyb)
+
+        if omega != 0:
+            raise NotImplementedError('RSH functional is not fully implemented in this block.')
+
+        xctype = ni._xc_type(xc)
+        opt = getattr(ni, 'gdftopt', None)
+        if opt is None:
+            ni.build(mol, grids.coords)
+            opt = ni.gdftopt
+        _sorted_mol = opt._sorted_mol
+
+        # Use the inner (active) orbitals to evaluate the background density for fxc
+        mo_coeff_global = cp.asarray(mo_coeff_ao)
+        mo_occ_global = cp.asarray(mo_occ)
+        
+        mo_coeff_global_sort = opt.sort_orbitals(mo_coeff_global, axis=[0])
+        C_occ_sort = opt.sort_orbitals(C_occ, axis=[0])
+        C_vir_sort = opt.sort_orbitals(C_vir, axis=[0])
+
+        # 2. Add DFT grid-based exchange-correlation response using INNER xc
+        if xctype == 'LDA':
+            ao_deriv = 0
+            for ao, mask, weight, coords in ni.block_loop(_sorted_mol, grids, nao, ao_deriv):
+                rho = ni.eval_rho2(_sorted_mol, ao, mo_coeff_global_sort[mask], mo_occ_global, mask, xctype, with_lapl=False)
+                if singlet or singlet is None:
+                    fxc = ni.eval_xc_eff(xc, rho, deriv=2, xctype=xctype)[2]
+                    wfxc = fxc[0,0] * weight
+                else:
+                    fxc = ni.eval_xc_eff(xc, cp.stack((rho, rho))*0.5, deriv=2, xctype=xctype)[2]
+                    wfxc = (fxc[0,0,0,0] - fxc[1,0,0,0]) * 0.5 * weight
+
+                rho_o = cp.einsum('pr,pi->ri', ao, C_occ_sort[mask])
+                rho_v = cp.einsum('pr,pi->ri', ao, C_vir_sort[mask])
+                rho_ov = cp.einsum('ri,ra->ria', rho_o, rho_v)
+                w_ov = cp.einsum('ria,r->ria', rho_ov, wfxc)
+                iajb = cp.einsum('ria,rjb->iajb', rho_ov, w_ov) * 2
+                a += iajb
+
+        elif xctype == 'GGA':
+            ao_deriv = 1
+            for ao, mask, weight, coords in ni.block_loop(_sorted_mol, grids, nao, ao_deriv):
+                rho = ni.eval_rho2(_sorted_mol, ao, mo_coeff_global_sort[mask], mo_occ_global, mask, xctype, with_lapl=False)
+                if singlet or singlet is None:
+                    fxc = ni.eval_xc_eff(xc, rho, deriv=2, xctype=xctype)[2]
+                    wfxc = fxc * weight
+                else:
+                    fxc = ni.eval_xc_eff(xc, cp.stack((rho, rho))*0.5, deriv=2, xctype=xctype)[2]
+                    wfxc = (fxc[0,:,0,:] - fxc[1,:,0,:]) * 0.5 * weight
+
+                rho_o = cp.einsum('xpr,pi->xri', ao, C_occ_sort[mask])
+                rho_v = cp.einsum('xpr,pi->xri', ao, C_vir_sort[mask])
+                rho_ov = cp.einsum('xri,ra->xria', rho_o, rho_v[0])
+                rho_ov[1:4] += cp.einsum('ri,xra->xria', rho_o[0], rho_v[1:4])
+                
+                w_ov = cp.einsum('xyr,xria->yria', wfxc, rho_ov)
+                iajb = cp.einsum('xria,xrjb->iajb', w_ov, rho_ov) * 2
+                a += iajb
+
+        elif xctype == 'MGGA':
+            ao_deriv = 1
+            for ao, mask, weight, coords in ni.block_loop(_sorted_mol, grids, nao, ao_deriv):
+                rho = ni.eval_rho2(_sorted_mol, ao, mo_coeff_global_sort[mask], mo_occ_global, mask, xctype, with_lapl=False)
+                if singlet or singlet is None:
+                    fxc = ni.eval_xc_eff(xc, rho, deriv=2, xctype=xctype)[2]
+                    wfxc = fxc * weight
+                else:
+                    fxc = ni.eval_xc_eff(xc, cp.stack((rho, rho))*0.5, deriv=2, xctype=xctype)[2]
+                    wfxc = (fxc[0,:,0,:] - fxc[1,:,0,:]) * 0.5 * weight
+
+                rho_o = cp.einsum('xpr,pi->xri', ao, C_occ_sort[mask])
+                rho_v = cp.einsum('xpr,pi->xri', ao, C_vir_sort[mask])
+                rho_ov = cp.einsum('xri,ra->xria', rho_o, rho_v[0])
+                rho_ov[1:4] += cp.einsum('ri,xra->xria', rho_o[0], rho_v[1:4])
+                tau_ov = cp.einsum('xri,xra->ria', rho_o[1:4], rho_v[1:4]) * 0.5
+                rho_ov = cp.vstack([rho_ov, tau_ov[cp.newaxis]])
+                
+                w_ov = cp.einsum('xyr,xria->yria', wfxc, rho_ov)
+                iajb = cp.einsum('xria,xrjb->iajb', w_ov, rho_ov) * 2
+                a += iajb
+
+    else:
+        add_hf_(a, hyb=1.0)
+
+    A_mat = a.reshape(nocc * nvir, nocc * nvir)
+    A_mat = 0.5 * (A_mat + A_mat.T)
+    A_mat = to_numpy(A_mat)
+
+    w = np.linalg.eigvalsh(A_mat)
     return {"excitation_energies": [float(x) for x in np.sort(w)],
-            "a_matrix": A, "nocc": int(nocc), "nvir": int(nvir)}
+            "a_matrix": A_mat, "nocc": int(nocc), "nvir": int(nvir)}
 
 
 def embedded_tda(emb, mf_outer, ifrag=0, singlet=True, nstates=5):
@@ -289,7 +387,8 @@ def embedded_tda(emb, mf_outer, ifrag=0, singlet=True, nstates=5):
     mf_inner = emb.mf_inner[ifrag]
     B = emb.B[ifrag]
     mo_coeff_ao = project_mo_emb_to_ao(mf_inner.mo_coeff, B)
-    res = build_tda_amatrix(mf_outer, mo_coeff_ao, mf_inner.mo_energy,
+    # Passed mf_inner to ensure correct functional response parameters
+    res = build_tda_amatrix(mf_outer, mf_inner, mo_coeff_ao, mf_inner.mo_energy,
                             mf_inner.mo_occ, singlet=singlet)
     energies = res["excitation_energies"][:nstates]
     HARTREE2EV = 27.211386245988
@@ -374,24 +473,4 @@ def full_ao_embedding_density(emb, ifrag=0):
     dm_core = emb.dm_core[ifrag]
     dm_core = as_backend(dm_core, dm_active_ao)
     return dm_active_ao + dm_core
-
-
-# ---------------------------------------------------------------------------
-# Bond-length utilities (single-point bond shift)
-# ---------------------------------------------------------------------------
-def scale_bond(coords, ia, ja, scale):
-    """Return a copy of *coords* with atom *ja* moved along the ia-ja bond.
-
-    The bond vector ``r_ja - r_ia`` is rescaled by *scale* about atom *ia*
-    (atom *ia* is held fixed).  ``coords`` is in Angstrom.
-
-    This is the single elementary operation behind the single-point bond test:
-    given a shift ratio from the JSON config we rescale exactly one bond and
-    evaluate the energies once -- no PES scan, no equilibrium fit, no fragment
-    motion.
-    """
-    coords = np.array(coords, dtype=float, copy=True)
-    vec = coords[ja] - coords[ia]
-    coords[ja] = coords[ia] + scale * vec
-    return coords
 

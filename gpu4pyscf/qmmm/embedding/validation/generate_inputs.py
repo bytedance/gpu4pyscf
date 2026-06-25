@@ -15,7 +15,6 @@
 import os
 import re
 import json
-import argparse
 import numpy as np
 
 
@@ -96,73 +95,31 @@ def build_system_entry(path, basis_set, xc_low, xc_high, xc_lda,
     }
 
 
-def generate(xyz_dir, out_path, basis_set="def2-svp", xc_low="pbe",
+def generate(xyz_path, out_path, basis_set="def2-svp", xc_low="pbe",
              xc_high="b3lyp", xc_lda="lda,vwn", charge=0, spin=0,
              fragment_id=None, bond_test_id=None,
              bond_shift_flag=False, bond_shift_scale=1.0):
+    """Generate a test_systems.json for a single .xyz file."""
 
-    if not os.path.isdir(xyz_dir):
-        raise NotADirectoryError(xyz_dir)
+    if not os.path.isfile(xyz_path):
+        raise FileNotFoundError(f"File not found: {xyz_path}")
 
     fragment_id = list(fragment_id or [])
     bond_test_id = list(bond_test_id or [])
 
-    xyz_files = sorted(
-        os.path.join(xyz_dir, f) for f in os.listdir(xyz_dir)
-        if f.lower().endswith(".xyz")
-    )
-    if not xyz_files:
-        raise FileNotFoundError(f"No .xyz files found in {xyz_dir}")
-
     systems = {}
-    for path in xyz_files:
-        name = molecule_name_from_path(path)
-        try:
-            systems[name] = build_system_entry(
-                path, basis_set, xc_low, xc_high, xc_lda,
-                charge=charge, spin=spin, fragment_id=fragment_id,
-                bond_test_id=bond_test_id,
-                bond_shift_flag=bond_shift_flag,
-                bond_shift_scale=bond_shift_scale)
-        except Exception as exc:                  # keep going on a bad file
-            systems[name] = {"error": f"failed to parse: {exc}"}
+    name = molecule_name_from_path(xyz_path)
+    
+    try:
+        systems[name] = build_system_entry(
+            xyz_path, basis_set, xc_low, xc_high, xc_lda,
+            charge=charge, spin=spin, fragment_id=fragment_id,
+            bond_test_id=bond_test_id,
+            bond_shift_flag=bond_shift_flag,
+            bond_shift_scale=bond_shift_scale)
+    except Exception as exc:                  # keep going on a bad file
+        systems[name] = {"error": f"failed to parse: {exc}"}
 
     with open(out_path, "w") as fh:
         json.dump(systems, fh, indent=4)
     return systems
-
-
-def _build_arg_parser():
-    p = argparse.ArgumentParser(
-        description="Generate test_systems.json from a directory of .xyz files.")
-    p.add_argument("--xyz-dir", required=True, help="Directory containing .xyz files.")
-    p.add_argument("--out", default="test_systems.json", help="Output JSON path.")
-    p.add_argument("--basis", default="def2-svp", help="Basis set for all systems.")
-    p.add_argument("--xc-low", default="pbe", help="Low-level (environment) functional.")
-    p.add_argument("--xc-high", default="b3lyp", help="High-level (active) functional.")
-    p.add_argument("--xc-lda", default="lda,vwn", help="LDA functional label.")
-    p.add_argument("--charge", type=int, default=0, help="Total charge for all systems.")
-    p.add_argument("--spin", type=int, default=0, help="2S spin for all systems.")
-    p.add_argument("--fragment", type=int, nargs="+", required=True,
-                   metavar="ATOM",
-                   help="Active fragment atom indices (e.g. --fragment 0 1 2).")
-    p.add_argument("--bond", type=int, nargs=2, default=None, metavar=("I", "J"),
-                   help="The [i, j] atom pair whose bond is shifted.")
-    p.add_argument("--bond-shift", action="store_true",
-                   help="Enable the single-point bond shift (sets bond_shift_flag).")
-    p.add_argument("--bond-shift-scale", type=float, default=1.0,
-                   help="Ratio applied to the target bond when --bond-shift is set.")
-    return p
-
-
-def main(argv=None):
-    args = _build_arg_parser().parse_args(argv)
-    systems = generate(
-        args.xyz_dir, args.out, basis_set=args.basis, xc_low=args.xc_low,
-        xc_high=args.xc_high, xc_lda=args.xc_lda, charge=args.charge,
-        spin=args.spin, fragment_id=args.fragment,
-        bond_test_id=(args.bond or []),
-        bond_shift_flag=args.bond_shift,
-        bond_shift_scale=args.bond_shift_scale)
-    n_ok = sum(1 for v in systems.values() if "error" not in v)
-    print(f"Wrote {args.out}: {n_ok}/{len(systems)} systems parsed successfully.")
