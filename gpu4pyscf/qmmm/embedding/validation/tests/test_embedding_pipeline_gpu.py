@@ -247,10 +247,9 @@ class TestSingleJobSmoke:
             "charge": 0, "spin": 0, "basis_set": "sto-3g",
             "xc_lda": "lda,vwn", "xc_low": "pbe", "xc_high": "b3lyp",
             "fragment_id": [0, 1, 2],
-            "energy_flag": True,
-            "bond_shift_flag": True, "bond_shift_scale": 1.05,
-            "bond_test_id": [0, 1],
+            "energy_flag": True, "bond_approx_flag": False,
             "tda_flag": True, "population_flag": True,
+            "bond_test_id": [0, 1],
         }
         outdir = tempfile.mkdtemp()
         result = single.process_single(config, "water_smoke", outdir=outdir)

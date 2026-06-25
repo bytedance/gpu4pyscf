@@ -12,32 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Task 1 -- Test-system JSON input generator.
-
-Scans a directory of ``.xyz`` files and emits a ``test_systems.json`` describing
-every molecule together with the auxiliary fields the embedding validation
-pipeline needs (charge, spin, basis set, the low/high/lda functionals, the
-active fragment, energy/PES flags and the bonds to scan).
-
-The script is pure ``numpy``/stdlib so it runs anywhere -- no GPU required.
-
-Usage
------
-    python generate_inputs.py --xyz-dir ./sample_xyz --out test_systems.json
-    python generate_inputs.py --xyz-dir ./sample_xyz --basis def2-svp \
-        --xc-low pbe --xc-high b3lyp --xc-lda lda,vwn
-
-The auto fragment heuristic selects the first heavy atom and the hydrogens bonded
-to it (a chemically sensible "local" QM region); it can always be overridden by
-hand-editing the generated JSON.
-"""
 
 import os
 import re
 import json
 import argparse
-
 import numpy as np
 
 

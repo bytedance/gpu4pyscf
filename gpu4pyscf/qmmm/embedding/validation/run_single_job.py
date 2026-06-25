@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Task 2 -- Single-molecule core calculation driver.
+Single-molecule core calculation driver.
 
 Reads ONE molecule record from ``test_systems.json`` and runs the full
 validation pipeline:

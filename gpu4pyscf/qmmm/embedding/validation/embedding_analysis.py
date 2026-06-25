@@ -12,50 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Analysis primitives for validating the local Density Matrix Embedding method.
-
-All routines that touch the embedded solver enforce the single most important
-invariant of the framework:
-
-    The inner solver ``mf_inner`` returns the density matrix D, orbital
-    coefficients C and orbital energies in the *local embedding basis*
-    (dimension N_emb x N_emb).  Before computing ANY global / real-space
-    property (population analysis, density cubes, excited-state response
-    integrals) these quantities MUST be projected back to the full AO basis
-    through the projector B (dimension N_AO x N_emb):
-
-        C_AO = B @ C_emb                      (N_AO x N_emb)
-        D_AO = B @ D_emb @ B.T                (N_AO x N_AO)
-
-Helper functions therefore consistently return AO-basis quantities and assert
-their dimensions so that a forgotten projection fails loudly rather than
-silently producing N_emb x N_emb garbage.
-
-The module is deliberately written to be array-backend agnostic: it works with
-``cupy`` arrays when a GPU is available (the gpu4pyscf default) and transparently
-falls back to ``numpy`` otherwise, so the pure-math helpers remain unit-testable
-on a CPU-only machine.
-"""
-
 import numpy as np
-
-try:                                    # gpu4pyscf always ships cupy, but the
-    import cupy as cp                   # numerical fallback keeps helpers usable
-    _HAS_CUPY = True                    # in CPU-only test environments.
-except Exception:                       # pragma: no cover - exercised only w/o cupy
-    cp = None
-    _HAS_CUPY = False
+import cupy as cp
 
 
-# ---------------------------------------------------------------------------
-# Array backend helpers
-# ---------------------------------------------------------------------------
 def to_numpy(x):
     """Return a host (numpy) copy of *x* regardless of the backend."""
     if x is None:
         return None
-    if _HAS_CUPY and isinstance(x, cp.ndarray):
+    if isinstance(x, cp.ndarray):
         return cp.asnumpy(x)
     return np.asarray(x)
 
@@ -67,32 +32,12 @@ def to_float(x):
 
 def as_backend(x, like):
     """Cast *x* to the same backend (cupy/numpy) as *like*."""
-    if _HAS_CUPY and isinstance(like, cp.ndarray):
+    if isinstance(like, cp.ndarray):
         return cp.asarray(x)
     return np.asarray(to_numpy(x))
 
 
-# ---------------------------------------------------------------------------
-# Basis transformation: the core invariant of the embedding framework
-# ---------------------------------------------------------------------------
 def project_dm_emb_to_ao(dm_emb, B):
-    r"""Project an embedding-basis density matrix back to the full AO basis.
-
-    .. math::  D_{AO} = B \, D_{emb} \, B^{T}
-
-    Parameters
-    ----------
-    dm_emb : (N_emb, N_emb) array
-        Density matrix in the local embedding basis (as returned by the inner
-        solver ``mf_inner.make_rdm1()``).
-    B : (N_AO, N_emb) array
-        AO -> embedding projector ``emb.B[ifrag]``.
-
-    Returns
-    -------
-    (N_AO, N_AO) array
-        Active-space density in the full AO basis.  The dimension is asserted.
-    """
     B = as_backend(B, dm_emb)
     nao, nemb = B.shape
     assert dm_emb.shape == (nemb, nemb), (
@@ -104,20 +49,6 @@ def project_dm_emb_to_ao(dm_emb, B):
 
 
 def project_mo_emb_to_ao(mo_emb, B):
-    r"""Project embedding-basis orbital coefficients to the AO basis.
-
-    .. math::  C_{AO} = B \, C_{emb}
-
-    Parameters
-    ----------
-    mo_emb : (N_emb, N_mo) array
-        MO coefficients expressed in the embedding basis.
-    B : (N_AO, N_emb) array
-
-    Returns
-    -------
-    (N_AO, N_mo) array
-    """
     B = as_backend(B, mo_emb)
     nao, nemb = B.shape
     assert mo_emb.shape[0] == nemb, (
@@ -128,29 +59,6 @@ def project_mo_emb_to_ao(mo_emb, B):
 
 
 def project_dm_ao_to_emb(dm_ao, B, s_ao):
-    r"""Metric-consistent projection of an AO density into the embedding basis.
-
-    .. math::  D_{act}^{ref} = (B^{T} S) \, D_{AO} \, (S B)
-
-    This is the correct *physical* (number-conserving) restriction of an AO
-    density onto the embedding space: because ``B`` is S-orthonormal
-    (``B^T S B = 1``) the round trip ``B (B^T S D S B) B^T`` reproduces ``D``
-    exactly when the embedding space spans the whole AO space.  Using the bare
-    ``B^T D B`` instead would silently break both electron counting and the
-    full-dimension exactness test.
-
-    Parameters
-    ----------
-    dm_ao : (N_AO, N_AO) array
-        Density matrix in the AO basis.
-    B : (N_AO, N_emb) array
-    s_ao : (N_AO, N_AO) array
-        AO overlap matrix.
-
-    Returns
-    -------
-    (N_emb, N_emb) array
-    """
     B = as_backend(B, dm_ao)
     s_ao = as_backend(s_ao, dm_ao)
     sB = s_ao @ B
@@ -169,14 +77,7 @@ def assert_full_ao(dm, nao, name="density matrix"):
     return True
 
 
-# ---------------------------------------------------------------------------
-# XC / exchange energy helpers (used by the shifted reference energy)
-# ---------------------------------------------------------------------------
 def hybrid_exchange_coeff(mf):
-    """Fraction of exact (Hartree-Fock) exchange c_x for a (hybrid) functional.
-
-    Pure GGA/LDA functionals return 0.0; Hartree-Fock returns 1.0.
-    """
     ni = getattr(mf, "_numint", None)
     xc = getattr(mf, "xc", None)
     if ni is not None and xc is not None:
@@ -187,51 +88,28 @@ def hybrid_exchange_coeff(mf):
 
 
 def semilocal_exc(mf, dm_ao):
-    r"""Semilocal exchange-correlation energy :math:`E_{xc}[\rho]` for *dm_ao*.
-
-    Evaluates the (LDA/GGA/hybrid-semilocal-part) XC energy on the grid for an
-    arbitrary AO-basis density matrix.  The exact-exchange admixture of a hybrid
-    is *excluded* here on purpose; it is handled separately through
-    :func:`exact_exchange_energy` so that the shift formula can mix functionals
-    with different ``c_x``.
-
-    For a plain Hartree-Fock object (no ``_numint``) the semilocal XC energy is
-    zero.
-    """
     ni = getattr(mf, "_numint", None)
     if ni is None:
         return 0.0
     grids = mf.grids
     if grids.coords is None:
         grids.build()
-    dm = as_backend(dm_ao, cp.zeros(1) if _HAS_CUPY else np.zeros(1))
+    dm = as_backend(dm_ao, cp.zeros(1))
     # nr_rks returns (nelec, exc, vxc); we only need the energy.
     _, exc, _ = ni.nr_rks(mf.mol, grids, mf.xc, dm)
     return to_float(exc)
 
 
 def exact_exchange_energy(mf, dm_ao):
-    r"""Closed-shell exact-exchange energy per *unit* of admixture.
-
-    Returns :math:`-\tfrac14 \mathrm{Tr}[D\,K(D)]` with ``K = get_k(D)``.
-
-    For a restricted closed-shell determinant the exact-exchange contribution to
-    the energy that multiplies the hybrid coefficient :math:`c_x` is
-    :math:`-\tfrac14 c_x \mathrm{Tr}[D K]` (this is the convention used inside
-    gpu4pyscf's ``rks.get_veff`` where ``vk *= .5`` and ``exc += .5 Tr[D vk]``).
-    The returned value already carries the sign, so the shift term simply
-    multiplies it by ``(c_x_high - c_x_low)``.
-    """
     K = get_k_matrix(mf, dm_ao)
     dm = as_backend(dm_ao, K)
     return -0.25 * to_float((dm * K).sum())
 
 
 def get_k_matrix(mf, dm_ao):
-    """Bare exchange matrix ``K(D)`` in the AO basis (no hybrid scaling)."""
     mol = mf.mol
     try:
-        K = mf.get_k(mol, as_backend(dm_ao, cp.zeros(1) if _HAS_CUPY else np.zeros(1)))
+        K = mf.get_k(mol, as_backend(dm_ao, cp.zeros(1)))
     except TypeError:
         K = mf.get_k(mol, dm_ao)
     return K
@@ -246,18 +124,6 @@ def delta_exc_shift_active(mf_low, mf_high, dm_act_ref_ao):
             \big(E_{xc}^{high}[\rho_{act}^{ref}] - E_{xc}^{low}[\rho_{act}^{ref}]\big)
             - \tfrac12 (c_x^{high} - c_x^{low})\,
               \mathrm{Tr}\!\big[D_{act}^{ref} K(D_{act}^{ref})\big]
-
-    Notes
-    -----
-    The exchange book-keeping uses :func:`exact_exchange_energy`, which already
-    returns :math:`-\tfrac14 \mathrm{Tr}[DK]`.  Multiplying by
-    ``(c_x_high - c_x_low)`` therefore yields exactly the
-    :math:`-\tfrac12 \cdot \tfrac12 (c_x^{high}-c_x^{low}) \mathrm{Tr}[DK]`
-    closed-shell exact-exchange difference, consistent with gpu4pyscf energies.
-
-    Crucially, when ``mf_low`` and ``mf_high`` use the *same* functional both the
-    semilocal difference and the exchange-coefficient difference vanish, so this
-    term is *identically zero* -- the limiting case checked by the unit tests.
     """
     exc_high = semilocal_exc(mf_high, dm_act_ref_ao)
     exc_low = semilocal_exc(mf_low, dm_act_ref_ao)
@@ -283,18 +149,6 @@ def shifted_reference_energy(mf_low, mf_high, emb, ifrag=0):
 
         E_{ref}^{shifted} = E_{global}^{low}[D_{conv}^{low}]
                           + \Delta E_{xc\_shift}^{act}[D_{act}^{ref}]
-
-    with :math:`D_{act}^{ref} = (B^T S)\,D_{conv}^{low}\,(S B)`.
-
-    Parameters
-    ----------
-    mf_low, mf_high : converged / template SCF objects (low and high functionals).
-    emb : a solved ``SingleFragmentEmbedding`` instance (``emb.kernel()`` already
-        called) providing ``emb.B[ifrag]`` and the AO overlap.
-
-    Returns
-    -------
-    dict with keys ``e_global_low``, ``delta_xc_shift`` and ``e_ref_shifted``.
     """
     if not getattr(mf_low, "converged", False):
         mf_low.kernel()
@@ -339,9 +193,6 @@ def high_level_nonscf_energy(mf_low, mf_high):
 # ---------------------------------------------------------------------------
 def core_homo_lumo(mf_inner):
     """HOMO / LUMO (and gap) of the embedded cluster solver, in Hartree.
-
-    The orbital energies live in the embedding basis but are basis-invariant
-    eigenvalues, so they may be read directly from ``mf_inner.mo_energy``.
     """
     mo_energy = to_numpy(mf_inner.mo_energy).ravel()
     mo_occ = to_numpy(mf_inner.mo_occ).ravel()
@@ -387,7 +238,7 @@ def build_tda_amatrix(mf_outer, mo_coeff_ao, mo_energy, mo_occ, singlet=True):
     ``nocc``, ``nvir``.
     """
     nao = int(mf_outer.mol.nao_nr())
-    mo_coeff_ao = as_backend(mo_coeff_ao, cp.zeros(1) if _HAS_CUPY else np.zeros(1))
+    mo_coeff_ao = as_backend(mo_coeff_ao, cp.zeros(1))
     assert mo_coeff_ao.shape[0] == nao, (
         f"mo_coeff must be AO-projected (leading dim N_AO={nao}); got "
         f"{mo_coeff_ao.shape[0]}. Project with B first (C_AO = B @ C_emb).")
@@ -404,11 +255,9 @@ def build_tda_amatrix(mf_outer, mo_coeff_ao, mo_energy, mo_occ, singlet=True):
     C_occ = mo_coeff_ao[:, as_backend(occ_idx, mo_coeff_ao)]
     C_vir = mo_coeff_ao[:, as_backend(vir_idx, mo_coeff_ao)]
 
-    xp = cp if (_HAS_CUPY and isinstance(mo_coeff_ao, cp.ndarray)) else np
-
     # Transition density matrices, one (N_AO, N_AO) block per (i,a) pair.
     # einsum('uj,vb->jbuv', C_occ, C_vir) -> shape (nocc, nvir, nao, nao)
-    P_trans = xp.einsum('uj,vb->jbuv', C_occ, C_vir)
+    P_trans = cp.einsum('uj,vb->jbuv', C_occ, C_vir)
     assert P_trans.shape == (nocc, nvir, nao, nao), (
         "transition density block must be (nocc, nvir, N_AO, N_AO); got "
         f"{tuple(P_trans.shape)}")
@@ -420,7 +269,7 @@ def build_tda_amatrix(mf_outer, mo_coeff_ao, mo_energy, mo_occ, singlet=True):
 
     # Contract response potential back onto the active occ/vir orbitals:
     # K_{ia,jb} = C_occ_i^T V_resp[jb] C_vir_a
-    K = xp.einsum('ui,jbuv,va->iajb', C_occ, v1ao, C_vir)
+    K = cp.einsum('ui,jbuv,va->iajb', C_occ, v1ao, C_vir)
     K = to_numpy(K).reshape(nocc * nvir, nocc * nvir)
 
     e_ia = (mo_energy_h[vir_idx][None, :] - mo_energy_h[occ_idx][:, None]).ravel()
