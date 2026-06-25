@@ -1,0 +1,121 @@
+{
+    "ethane": {
+        "element": [
+            "C",
+            "C",
+            "H",
+            "H",
+            "H",
+            "H",
+            "H",
+            "H"
+        ],
+        "structure": [
+            [
+                -0.76091,
+                -0.0,
+                0.0
+            ],
+            [
+                0.76091,
+                -0.0,
+                0.0
+            ],
+            [
+                -1.16001,
+                1.02029,
+                0.0
+            ],
+            [
+                -1.16001,
+                -0.51014,
+                -0.88357
+            ],
+            [
+                -1.16001,
+                -0.51014,
+                0.88357
+            ],
+            [
+                1.16001,
+                -1.02029,
+                0.0
+            ],
+            [
+                1.16001,
+                0.51014,
+                0.88357
+            ],
+            [
+                1.16001,
+                0.51014,
+                -0.88357
+            ]
+        ],
+        "charge": 0,
+        "spin": 0,
+        "basis_set": "sto-3g",
+        "xc_lda": "lda,vwn",
+        "xc_low": "pbe",
+        "xc_high": "b3lyp",
+        "fragment_id": [
+            0,
+            2,
+            3,
+            4
+        ],
+        "energy_flag": true,
+        "bond_shift_flag": false,
+        "bond_shift_scale": 1.0,
+        "bond_test_id": [
+            0,
+            1
+        ],
+        "tda_flag": true,
+        "population_flag": true
+    },
+    "water": {
+        "element": [
+            "O",
+            "H",
+            "H"
+        ],
+        "structure": [
+            [
+                0.0,
+                0.0,
+                0.11779
+            ],
+            [
+                0.0,
+                0.755453,
+                -0.471161
+            ],
+            [
+                0.0,
+                -0.755453,
+                -0.471161
+            ]
+        ],
+        "charge": 0,
+        "spin": 0,
+        "basis_set": "sto-3g",
+        "xc_lda": "lda,vwn",
+        "xc_low": "pbe",
+        "xc_high": "b3lyp",
+        "fragment_id": [
+            0,
+            1,
+            2
+        ],
+        "energy_flag": true,
+        "bond_shift_flag": false,
+        "bond_shift_scale": 1.0,
+        "bond_test_id": [
+            0,
+            1
+        ],
+        "tda_flag": true,
+        "population_flag": true
+    }
+}

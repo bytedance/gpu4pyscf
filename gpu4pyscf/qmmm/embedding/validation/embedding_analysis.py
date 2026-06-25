@@ -1,0 +1,548 @@
+# Copyright 2025 The PySCF Developers. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Analysis primitives for validating the local Density Matrix Embedding method.
+
+All routines that touch the embedded solver enforce the single most important
+invariant of the framework:
+
+    The inner solver ``mf_inner`` returns the density matrix D, orbital
+    coefficients C and orbital energies in the *local embedding basis*
+    (dimension N_emb x N_emb).  Before computing ANY global / real-space
+    property (population analysis, density cubes, excited-state response
+    integrals) these quantities MUST be projected back to the full AO basis
+    through the projector B (dimension N_AO x N_emb):
+
+        C_AO = B @ C_emb                      (N_AO x N_emb)
+        D_AO = B @ D_emb @ B.T                (N_AO x N_AO)
+
+Helper functions therefore consistently return AO-basis quantities and assert
+their dimensions so that a forgotten projection fails loudly rather than
+silently producing N_emb x N_emb garbage.
+
+The module is deliberately written to be array-backend agnostic: it works with
+``cupy`` arrays when a GPU is available (the gpu4pyscf default) and transparently
+falls back to ``numpy`` otherwise, so the pure-math helpers remain unit-testable
+on a CPU-only machine.
+"""
+
+import numpy as np
+
+try:                                    # gpu4pyscf always ships cupy, but the
+    import cupy as cp                   # numerical fallback keeps helpers usable
+    _HAS_CUPY = True                    # in CPU-only test environments.
+except Exception:                       # pragma: no cover - exercised only w/o cupy
+    cp = None
+    _HAS_CUPY = False
+
+
+# ---------------------------------------------------------------------------
+# Array backend helpers
+# ---------------------------------------------------------------------------
+def to_numpy(x):
+    """Return a host (numpy) copy of *x* regardless of the backend."""
+    if x is None:
+        return None
+    if _HAS_CUPY and isinstance(x, cp.ndarray):
+        return cp.asnumpy(x)
+    return np.asarray(x)
+
+
+def to_float(x):
+    """Coerce a 0-d array / python scalar to a plain python float."""
+    return float(to_numpy(x))
+
+
+def as_backend(x, like):
+    """Cast *x* to the same backend (cupy/numpy) as *like*."""
+    if _HAS_CUPY and isinstance(like, cp.ndarray):
+        return cp.asarray(x)
+    return np.asarray(to_numpy(x))
+
+
+# ---------------------------------------------------------------------------
+# Basis transformation: the core invariant of the embedding framework
+# ---------------------------------------------------------------------------
+def project_dm_emb_to_ao(dm_emb, B):
+    r"""Project an embedding-basis density matrix back to the full AO basis.
+
+    .. math::  D_{AO} = B \, D_{emb} \, B^{T}
+
+    Parameters
+    ----------
+    dm_emb : (N_emb, N_emb) array
+        Density matrix in the local embedding basis (as returned by the inner
+        solver ``mf_inner.make_rdm1()``).
+    B : (N_AO, N_emb) array
+        AO -> embedding projector ``emb.B[ifrag]``.
+
+    Returns
+    -------
+    (N_AO, N_AO) array
+        Active-space density in the full AO basis.  The dimension is asserted.
+    """
+    B = as_backend(B, dm_emb)
+    nao, nemb = B.shape
+    assert dm_emb.shape == (nemb, nemb), (
+        f"dm_emb must be (N_emb, N_emb)=({nemb},{nemb}), got {tuple(dm_emb.shape)}")
+    dm_ao = B @ dm_emb @ B.T
+    assert dm_ao.shape == (nao, nao), (
+        f"projected dm must be (N_AO, N_AO)=({nao},{nao}), got {tuple(dm_ao.shape)}")
+    return dm_ao
+
+
+def project_mo_emb_to_ao(mo_emb, B):
+    r"""Project embedding-basis orbital coefficients to the AO basis.
+
+    .. math::  C_{AO} = B \, C_{emb}
+
+    Parameters
+    ----------
+    mo_emb : (N_emb, N_mo) array
+        MO coefficients expressed in the embedding basis.
+    B : (N_AO, N_emb) array
+
+    Returns
+    -------
+    (N_AO, N_mo) array
+    """
+    B = as_backend(B, mo_emb)
+    nao, nemb = B.shape
+    assert mo_emb.shape[0] == nemb, (
+        f"mo_emb leading dim must be N_emb={nemb}, got {mo_emb.shape[0]}")
+    mo_ao = B @ mo_emb
+    assert mo_ao.shape[0] == nao
+    return mo_ao
+
+
+def project_dm_ao_to_emb(dm_ao, B, s_ao):
+    r"""Metric-consistent projection of an AO density into the embedding basis.
+
+    .. math::  D_{act}^{ref} = (B^{T} S) \, D_{AO} \, (S B)
+
+    This is the correct *physical* (number-conserving) restriction of an AO
+    density onto the embedding space: because ``B`` is S-orthonormal
+    (``B^T S B = 1``) the round trip ``B (B^T S D S B) B^T`` reproduces ``D``
+    exactly when the embedding space spans the whole AO space.  Using the bare
+    ``B^T D B`` instead would silently break both electron counting and the
+    full-dimension exactness test.
+
+    Parameters
+    ----------
+    dm_ao : (N_AO, N_AO) array
+        Density matrix in the AO basis.
+    B : (N_AO, N_emb) array
+    s_ao : (N_AO, N_AO) array
+        AO overlap matrix.
+
+    Returns
+    -------
+    (N_emb, N_emb) array
+    """
+    B = as_backend(B, dm_ao)
+    s_ao = as_backend(s_ao, dm_ao)
+    sB = s_ao @ B
+    dm_emb = sB.T @ dm_ao @ sB
+    nemb = B.shape[1]
+    assert dm_emb.shape == (nemb, nemb)
+    return dm_emb
+
+
+def assert_full_ao(dm, nao, name="density matrix"):
+    """Hard guard used before any global-property evaluation."""
+    shape = tuple(dm.shape)
+    assert shape == (nao, nao), (
+        f"{name} must be the full AO space (N_AO, N_AO)=({nao},{nao}); got "
+        f"{shape}. Did you forget to project the embedding-basis quantity with B?")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# XC / exchange energy helpers (used by the shifted reference energy)
+# ---------------------------------------------------------------------------
+def hybrid_exchange_coeff(mf):
+    """Fraction of exact (Hartree-Fock) exchange c_x for a (hybrid) functional.
+
+    Pure GGA/LDA functionals return 0.0; Hartree-Fock returns 1.0.
+    """
+    ni = getattr(mf, "_numint", None)
+    xc = getattr(mf, "xc", None)
+    if ni is not None and xc is not None:
+        spin = getattr(getattr(mf, "mol", None), "spin", 0)
+        return float(ni.hybrid_coeff(xc, spin=spin))
+    # Plain Hartree-Fock object: 100% exact exchange, no DFT XC.
+    return 1.0
+
+
+def semilocal_exc(mf, dm_ao):
+    r"""Semilocal exchange-correlation energy :math:`E_{xc}[\rho]` for *dm_ao*.
+
+    Evaluates the (LDA/GGA/hybrid-semilocal-part) XC energy on the grid for an
+    arbitrary AO-basis density matrix.  The exact-exchange admixture of a hybrid
+    is *excluded* here on purpose; it is handled separately through
+    :func:`exact_exchange_energy` so that the shift formula can mix functionals
+    with different ``c_x``.
+
+    For a plain Hartree-Fock object (no ``_numint``) the semilocal XC energy is
+    zero.
+    """
+    ni = getattr(mf, "_numint", None)
+    if ni is None:
+        return 0.0
+    grids = mf.grids
+    if grids.coords is None:
+        grids.build()
+    dm = as_backend(dm_ao, cp.zeros(1) if _HAS_CUPY else np.zeros(1))
+    # nr_rks returns (nelec, exc, vxc); we only need the energy.
+    _, exc, _ = ni.nr_rks(mf.mol, grids, mf.xc, dm)
+    return to_float(exc)
+
+
+def exact_exchange_energy(mf, dm_ao):
+    r"""Closed-shell exact-exchange energy per *unit* of admixture.
+
+    Returns :math:`-\tfrac14 \mathrm{Tr}[D\,K(D)]` with ``K = get_k(D)``.
+
+    For a restricted closed-shell determinant the exact-exchange contribution to
+    the energy that multiplies the hybrid coefficient :math:`c_x` is
+    :math:`-\tfrac14 c_x \mathrm{Tr}[D K]` (this is the convention used inside
+    gpu4pyscf's ``rks.get_veff`` where ``vk *= .5`` and ``exc += .5 Tr[D vk]``).
+    The returned value already carries the sign, so the shift term simply
+    multiplies it by ``(c_x_high - c_x_low)``.
+    """
+    K = get_k_matrix(mf, dm_ao)
+    dm = as_backend(dm_ao, K)
+    return -0.25 * to_float((dm * K).sum())
+
+
+def get_k_matrix(mf, dm_ao):
+    """Bare exchange matrix ``K(D)`` in the AO basis (no hybrid scaling)."""
+    mol = mf.mol
+    try:
+        K = mf.get_k(mol, as_backend(dm_ao, cp.zeros(1) if _HAS_CUPY else np.zeros(1)))
+    except TypeError:
+        K = mf.get_k(mol, dm_ao)
+    return K
+
+
+def delta_exc_shift_active(mf_low, mf_high, dm_act_ref_ao):
+    r"""Local functional-upgrade shift on the active reference density.
+
+    .. math::
+
+        \Delta E_{xc\_shift}^{act} =
+            \big(E_{xc}^{high}[\rho_{act}^{ref}] - E_{xc}^{low}[\rho_{act}^{ref}]\big)
+            - \tfrac12 (c_x^{high} - c_x^{low})\,
+              \mathrm{Tr}\!\big[D_{act}^{ref} K(D_{act}^{ref})\big]
+
+    Notes
+    -----
+    The exchange book-keeping uses :func:`exact_exchange_energy`, which already
+    returns :math:`-\tfrac14 \mathrm{Tr}[DK]`.  Multiplying by
+    ``(c_x_high - c_x_low)`` therefore yields exactly the
+    :math:`-\tfrac12 \cdot \tfrac12 (c_x^{high}-c_x^{low}) \mathrm{Tr}[DK]`
+    closed-shell exact-exchange difference, consistent with gpu4pyscf energies.
+
+    Crucially, when ``mf_low`` and ``mf_high`` use the *same* functional both the
+    semilocal difference and the exchange-coefficient difference vanish, so this
+    term is *identically zero* -- the limiting case checked by the unit tests.
+    """
+    exc_high = semilocal_exc(mf_high, dm_act_ref_ao)
+    exc_low = semilocal_exc(mf_low, dm_act_ref_ao)
+    d_semilocal = exc_high - exc_low
+
+    cx_high = hybrid_exchange_coeff(mf_high)
+    cx_low = hybrid_exchange_coeff(mf_low)
+    d_cx = cx_high - cx_low
+
+    if abs(d_cx) < 1e-15:
+        d_exchange = 0.0
+    else:
+        # exact_exchange_energy already carries the -1/4 Tr[DK] factor.
+        d_exchange = d_cx * exact_exchange_energy(mf_high, dm_act_ref_ao)
+
+    return float(d_semilocal + d_exchange)
+
+
+def shifted_reference_energy(mf_low, mf_high, emb, ifrag=0):
+    r"""Dynamic reference energy that absorbs the environment-XC mismatch.
+
+    .. math::
+
+        E_{ref}^{shifted} = E_{global}^{low}[D_{conv}^{low}]
+                          + \Delta E_{xc\_shift}^{act}[D_{act}^{ref}]
+
+    with :math:`D_{act}^{ref} = (B^T S)\,D_{conv}^{low}\,(S B)`.
+
+    Parameters
+    ----------
+    mf_low, mf_high : converged / template SCF objects (low and high functionals).
+    emb : a solved ``SingleFragmentEmbedding`` instance (``emb.kernel()`` already
+        called) providing ``emb.B[ifrag]`` and the AO overlap.
+
+    Returns
+    -------
+    dict with keys ``e_global_low``, ``delta_xc_shift`` and ``e_ref_shifted``.
+    """
+    if not getattr(mf_low, "converged", False):
+        mf_low.kernel()
+    e_global_low = float(mf_low.e_tot)
+
+    dm_low_ao = mf_low.make_rdm1()
+    s_ao = mf_low.get_ovlp()
+    B = emb.B[ifrag]
+
+    dm_act_ref = project_dm_ao_to_emb(dm_low_ao, B, s_ao)   # B^T S D S B (N_emb)
+    dm_act_ref_ao = project_dm_emb_to_ao(dm_act_ref, B)     # back to N_AO
+
+    delta = delta_exc_shift_active(mf_low, mf_high, dm_act_ref_ao)
+    return {
+        "e_global_low": e_global_low,
+        "delta_xc_shift": float(delta),
+        "e_ref_shifted": float(e_global_low + delta),
+    }
+
+
+def high_level_nonscf_energy(mf_low, mf_high):
+    r"""High-level total energy evaluated *non-self-consistently* on the
+    low-level converged density.
+
+    .. math::  E_{high}^{nonSCF} = E_{high}[D_{conv}^{low}]
+
+    This is the analytic value that :func:`shifted_reference_energy` must equal
+    when the embedding active space spans the entire molecule (full-dimension
+    exactness test).
+    """
+    if not getattr(mf_low, "converged", False):
+        mf_low.kernel()
+    dm_low = mf_low.make_rdm1()
+    h1e = mf_high.get_hcore()
+    vhf = mf_high.get_veff(mf_high.mol, dm_low)
+    e_elec = mf_high.energy_elec(dm_low, h1e, vhf)[0]
+    return float(e_elec + mf_high.energy_nuc())
+
+
+# ---------------------------------------------------------------------------
+# Local orbital energies (HOMO / LUMO of the embedded cluster)
+# ---------------------------------------------------------------------------
+def core_homo_lumo(mf_inner):
+    """HOMO / LUMO (and gap) of the embedded cluster solver, in Hartree.
+
+    The orbital energies live in the embedding basis but are basis-invariant
+    eigenvalues, so they may be read directly from ``mf_inner.mo_energy``.
+    """
+    mo_energy = to_numpy(mf_inner.mo_energy).ravel()
+    mo_occ = to_numpy(mf_inner.mo_occ).ravel()
+    occ = np.where(mo_occ > 1e-8)[0]
+    vir = np.where(mo_occ <= 1e-8)[0]
+    if occ.size == 0 or vir.size == 0:
+        return {"homo": None, "lumo": None, "gap": None}
+    homo = float(mo_energy[occ].max())
+    lumo = float(mo_energy[vir].min())
+    return {"homo": homo, "lumo": lumo, "gap": float(lumo - homo)}
+
+
+# ---------------------------------------------------------------------------
+# Local excited states: TDA via explicit assembly of the A matrix
+# ---------------------------------------------------------------------------
+def build_tda_amatrix(mf_outer, mo_coeff_ao, mo_energy, mo_occ, singlet=True):
+    r"""Assemble the TDA *A* matrix in the AO-projected MO basis and diagonalise.
+
+    The cluster orbitals enter through their AO-basis coefficients
+    ``mo_coeff_ao = B @ C_emb`` (the caller is responsible for the projection;
+    a dimension guard enforces it).  The response kernel of the *global*
+    low-level solver provides the two-electron coupling:
+
+    1. Build occ/vir AO coefficient blocks ``C_occ_AO``, ``C_vir_AO``.
+    2. Transition densities ``P_trans[i,a] = einsum('uj,vb->jbuv', C_occ, C_vir)``
+       (one AO-basis density matrix per ia pair).
+    3. ``V_resp = mf_outer.gen_response(singlet=True, hermi=0)(P_trans)``.
+    4. Contract back to MO: ``K_iajb = C_occ^T V_resp[jb] C_vir``.
+    5. ``A_iajb = (eps_a - eps_i) delta_ij delta_ab + K_iajb``.
+
+    Parameters
+    ----------
+    mf_outer : the global low-level SCF object exposing ``gen_response``.
+    mo_coeff_ao : (N_AO, N_mo) array
+        Cluster MO coefficients already projected to the AO basis.
+    mo_energy : (N_mo,) array
+    mo_occ : (N_mo,) array
+    singlet : bool
+
+    Returns
+    -------
+    dict with ``excitation_energies`` (sorted, Hartree), ``a_matrix`` (numpy),
+    ``nocc``, ``nvir``.
+    """
+    nao = int(mf_outer.mol.nao_nr())
+    mo_coeff_ao = as_backend(mo_coeff_ao, cp.zeros(1) if _HAS_CUPY else np.zeros(1))
+    assert mo_coeff_ao.shape[0] == nao, (
+        f"mo_coeff must be AO-projected (leading dim N_AO={nao}); got "
+        f"{mo_coeff_ao.shape[0]}. Project with B first (C_AO = B @ C_emb).")
+
+    mo_energy_h = to_numpy(mo_energy).ravel()
+    mo_occ_h = to_numpy(mo_occ).ravel()
+    occ_idx = np.where(mo_occ_h > 1e-8)[0]
+    vir_idx = np.where(mo_occ_h <= 1e-8)[0]
+    nocc, nvir = occ_idx.size, vir_idx.size
+    if nocc == 0 or nvir == 0:
+        return {"excitation_energies": [], "a_matrix": np.zeros((0, 0)),
+                "nocc": int(nocc), "nvir": int(nvir)}
+
+    C_occ = mo_coeff_ao[:, as_backend(occ_idx, mo_coeff_ao)]
+    C_vir = mo_coeff_ao[:, as_backend(vir_idx, mo_coeff_ao)]
+
+    xp = cp if (_HAS_CUPY and isinstance(mo_coeff_ao, cp.ndarray)) else np
+
+    # Transition density matrices, one (N_AO, N_AO) block per (i,a) pair.
+    # einsum('uj,vb->jbuv', C_occ, C_vir) -> shape (nocc, nvir, nao, nao)
+    P_trans = xp.einsum('uj,vb->jbuv', C_occ, C_vir)
+    assert P_trans.shape == (nocc, nvir, nao, nao), (
+        "transition density block must be (nocc, nvir, N_AO, N_AO); got "
+        f"{tuple(P_trans.shape)}")
+    dms = P_trans.reshape(nocc * nvir, nao, nao)
+
+    vresp = mf_outer.gen_response(singlet=singlet, hermi=0)
+    v1ao = vresp(dms)                       # (nocc*nvir, N_AO, N_AO)
+    v1ao = as_backend(v1ao, mo_coeff_ao).reshape(nocc, nvir, nao, nao)
+
+    # Contract response potential back onto the active occ/vir orbitals:
+    # K_{ia,jb} = C_occ_i^T V_resp[jb] C_vir_a
+    K = xp.einsum('ui,jbuv,va->iajb', C_occ, v1ao, C_vir)
+    K = to_numpy(K).reshape(nocc * nvir, nocc * nvir)
+
+    e_ia = (mo_energy_h[vir_idx][None, :] - mo_energy_h[occ_idx][:, None]).ravel()
+    A = K + np.diag(e_ia)
+    A = 0.5 * (A + A.T)                      # symmetrise against round-off
+
+    w = np.linalg.eigvalsh(A)
+    return {"excitation_energies": [float(x) for x in np.sort(w)],
+            "a_matrix": A, "nocc": int(nocc), "nvir": int(nvir)}
+
+
+def embedded_tda(emb, mf_outer, ifrag=0, singlet=True, nstates=5):
+    """Convenience wrapper: project the cluster MOs to AO then run :func:`build_tda_amatrix`.
+
+    Returns the lowest ``nstates`` TDA excitation energies (Hartree and eV).
+    """
+    mf_inner = emb.mf_inner[ifrag]
+    B = emb.B[ifrag]
+    mo_coeff_ao = project_mo_emb_to_ao(mf_inner.mo_coeff, B)
+    res = build_tda_amatrix(mf_outer, mo_coeff_ao, mf_inner.mo_energy,
+                            mf_inner.mo_occ, singlet=singlet)
+    energies = res["excitation_energies"][:nstates]
+    HARTREE2EV = 27.211386245988
+    return {
+        "excitation_energies_au": energies,
+        "excitation_energies_ev": [e * HARTREE2EV for e in energies],
+        "nocc": res["nocc"],
+        "nvir": res["nvir"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Population analysis (Mulliken) on the AO-projected density
+# ---------------------------------------------------------------------------
+def mulliken_charges(mol, dm_ao, s_ao, atom_ids=None):
+    r"""Mulliken atomic charges from an AO-basis density matrix.
+
+    .. math::  q_A = Z_A - \sum_{\mu \in A} (D S)_{\mu\mu}
+
+    Parameters
+    ----------
+    mol : the full molecule.
+    dm_ao : (N_AO, N_AO) array  -- MUST already be in the AO basis.
+    s_ao : (N_AO, N_AO) array   -- AO overlap.
+    atom_ids : optional list of atom indices to report (default: all atoms).
+
+    Returns
+    -------
+    dict mapping atom index -> charge (float).
+    """
+    nao = int(mol.nao_nr())
+    assert_full_ao(dm_ao, nao, "Mulliken density matrix")
+    dm = to_numpy(dm_ao)
+    s = to_numpy(s_ao)
+    pop = np.einsum('ij,ji->i', dm, s)       # per-AO gross population
+
+    aoslice = mol.aoslice_by_atom()
+    if atom_ids is None:
+        atom_ids = list(range(mol.natm))
+
+    charges = {}
+    for ia in atom_ids:
+        ia = int(ia)
+        p0, p1 = int(aoslice[ia, 2]), int(aoslice[ia, 3])
+        elec_pop = float(pop[p0:p1].sum())
+        z = float(mol.atom_charge(ia))
+        charges[ia] = z - elec_pop
+    return charges
+
+
+# ---------------------------------------------------------------------------
+# Density-difference cube export
+# ---------------------------------------------------------------------------
+def density_difference_cube(mol, dm_embedding_ao, dm_global_high_ao, outfile,
+                            nx=60, ny=60, nz=60):
+    r"""Write a Gaussian cube of ``rho_embedding - rho_global_high``.
+
+    Both density matrices must already be in the *full AO basis*
+    (N_AO x N_AO); the embedding density therefore has to be projected with
+    :func:`project_dm_emb_to_ao` (plus its frozen core) *before* calling this.
+
+    Uses pyscf's ``cubegen`` on host (numpy) arrays.
+    """
+    from pyscf.tools import cubegen
+    nao = int(mol.nao_nr())
+    assert_full_ao(dm_embedding_ao, nao, "embedding density (cube)")
+    assert_full_ao(dm_global_high_ao, nao, "global-high density (cube)")
+    dm_diff = to_numpy(dm_embedding_ao) - to_numpy(dm_global_high_ao)
+    cubegen.density(mol, outfile, dm_diff, nx=nx, ny=ny, nz=nz)
+    return outfile
+
+
+def full_ao_embedding_density(emb, ifrag=0):
+    """Total embedding density in the AO basis: ``D_core + B D_emb B^T``.
+
+    Returns an (N_AO, N_AO) array suitable for cube / Mulliken analysis.
+    """
+    mf_inner = emb.mf_inner[ifrag]
+    B = emb.B[ifrag]
+    dm_emb = mf_inner.make_rdm1()
+    dm_active_ao = project_dm_emb_to_ao(dm_emb, B)
+    dm_core = emb.dm_core[ifrag]
+    dm_core = as_backend(dm_core, dm_active_ao)
+    return dm_active_ao + dm_core
+
+
+# ---------------------------------------------------------------------------
+# Bond-length utilities (single-point bond shift)
+# ---------------------------------------------------------------------------
+def scale_bond(coords, ia, ja, scale):
+    """Return a copy of *coords* with atom *ja* moved along the ia-ja bond.
+
+    The bond vector ``r_ja - r_ia`` is rescaled by *scale* about atom *ia*
+    (atom *ia* is held fixed).  ``coords`` is in Angstrom.
+
+    This is the single elementary operation behind the single-point bond test:
+    given a shift ratio from the JSON config we rescale exactly one bond and
+    evaluate the energies once -- no PES scan, no equilibrium fit, no fragment
+    motion.
+    """
+    coords = np.array(coords, dtype=float, copy=True)
+    vec = coords[ja] - coords[ia]
+    coords[ja] = coords[ia] + scale * vec
+    return coords
+
