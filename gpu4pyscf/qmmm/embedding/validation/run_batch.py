@@ -144,7 +144,11 @@ def load_or_generate_systems(args):
         print(f"Generating {out_json} from {args.xyz_dir} ...")
         systems = gen.generate(
             args.xyz_dir, out_json, basis_set=args.basis, xc_low=args.xc_low,
-            xc_high=args.xc_high, xc_lda=args.xc_lda)
+            xc_high=args.xc_high, xc_lda=args.xc_lda, charge=args.charge,
+            spin=args.spin, fragment_id=args.fragment,
+            bond_test_id=(args.bond or []),
+            bond_shift_flag=args.bond_shift,
+            bond_shift_scale=args.bond_shift_scale)
         return systems
     with open(args.json, "r") as fh:
         return json.load(fh)
@@ -167,6 +171,17 @@ def _build_arg_parser():
     p.add_argument("--xc-low", default="pbe")
     p.add_argument("--xc-high", default="b3lyp")
     p.add_argument("--xc-lda", default="lda,vwn")
+    p.add_argument("--charge", type=int, default=0)
+    p.add_argument("--spin", type=int, default=0)
+    p.add_argument("--fragment", type=int, nargs="+", default=None,
+                   metavar="ATOM",
+                   help="Active fragment atom indices (required with --generate).")
+    p.add_argument("--bond", type=int, nargs=2, default=None, metavar=("I", "J"),
+                   help="The [i, j] atom pair whose bond is shifted.")
+    p.add_argument("--bond-shift", action="store_true",
+                   help="Enable the single-point bond shift (sets bond_shift_flag).")
+    p.add_argument("--bond-shift-scale", type=float, default=1.0,
+                   help="Ratio applied to the target bond when --bond-shift is set.")
     return p
 
 
@@ -174,6 +189,8 @@ def main(argv=None):
     args = _build_arg_parser().parse_args(argv)
     if args.generate and not args.xyz_dir:
         raise SystemExit("--generate requires --xyz-dir")
+    if args.generate and not args.fragment:
+        raise SystemExit("--generate requires --fragment")
     if not args.json and not args.xyz_dir:
         raise SystemExit("Provide --json and/or --xyz-dir")
 

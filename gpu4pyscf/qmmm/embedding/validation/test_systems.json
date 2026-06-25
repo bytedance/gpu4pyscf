@@ -60,13 +60,12 @@
         "xc_high": "b3lyp",
         "fragment_id": [
             0,
-            2,
-            3,
-            4
+            1,
+            2
         ],
         "energy_flag": true,
-        "bond_shift_flag": false,
-        "bond_shift_scale": 1.0,
+        "bond_shift_flag": true,
+        "bond_shift_scale": 1.05,
         "bond_test_id": [
             0,
             1
@@ -109,8 +108,8 @@
             2
         ],
         "energy_flag": true,
-        "bond_shift_flag": false,
-        "bond_shift_scale": 1.0,
+        "bond_shift_flag": true,
+        "bond_shift_scale": 1.05,
         "bond_test_id": [
             0,
             1

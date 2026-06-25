@@ -156,28 +156,14 @@ class TestXYZParsing:
         os.remove(path)
         assert elems == ["O", "H", "H"]
 
-    def test_fragment_and_bonds(self):
-        # Ethane-like: heavy C0 with three bonded H -> fragment {0,2,3,4}.
-        path = self._write(
-            "8\nethane\n"
-            "C -0.76 0 0\nC 0.76 0 0\n"
-            "H -1.16 1.02 0\nH -1.16 -0.51 -0.88\nH -1.16 -0.51 0.88\n"
-            "H 1.16 -1.02 0\nH 1.16 0.51 0.88\nH 1.16 0.51 -0.88\n")
-        elems, coords = gen.parse_xyz(path)
-        os.remove(path)
-        bonds = gen.perceive_bonds(elems, coords)
-        frag = gen.auto_fragment(elems, bonds)
-        assert 0 in frag and len(frag) >= 2
-        bond_ids = gen.auto_bond_test_ids(bonds, elems)
-        # The single heavy-heavy bond is C0-C1.
-        assert bond_ids == [0, 1]
-
     def test_generate_writes_json(self):
         d = tempfile.mkdtemp()
         with open(os.path.join(d, "h2.xyz"), "w") as fh:
             fh.write("2\nh2\nH 0 0 0\nH 0 0 0.74\n")
         out = os.path.join(d, "test_systems.json")
-        systems = gen.generate(d, out, basis_set="sto-3g",
+        # Everything except the geometry is user-supplied and copied verbatim.
+        systems = gen.generate(d, out, basis_set="sto-3g", charge=0, spin=0,
+                               fragment_id=[0, 1], bond_test_id=[0, 1],
                                bond_shift_flag=True, bond_shift_scale=1.1)
         assert os.path.exists(out)
         with open(out) as fh:
@@ -185,22 +171,16 @@ class TestXYZParsing:
         assert "h2" in loaded
         assert loaded["h2"]["basis_set"] == "sto-3g"
         assert loaded["h2"]["charge"] == 0
+        assert loaded["h2"]["spin"] == 0
+        # User-supplied fragment / bond are written through unchanged.
+        assert loaded["h2"]["fragment_id"] == [0, 1]
+        assert loaded["h2"]["bond_test_id"] == [0, 1]
         # New single-point bond-shift annotations are written through.
         assert loaded["h2"]["bond_shift_flag"] is True
         assert abs(loaded["h2"]["bond_shift_scale"] - 1.1) < 1e-12
         for key in ("element", "structure", "fragment_id", "bond_test_id",
                     "energy_flag", "bond_shift_flag", "bond_shift_scale"):
             assert key in loaded["h2"]
-
-
-class TestSpinGuess:
-    def test_even_electron_singlet(self):
-        assert gen.guess_spin(["H", "H"], 0) == 0          # 2 e- -> singlet
-        assert gen.guess_spin(["O", "H", "H"], 0) == 0     # 10 e- -> singlet
-
-    def test_odd_electron_doublet(self):
-        assert gen.guess_spin(["H"], 0) == 1               # 1 e- -> doublet
-        assert gen.guess_spin(["H", "H"], 1) == 1          # cation, 1 e-
 
 
 if __name__ == "__main__":
