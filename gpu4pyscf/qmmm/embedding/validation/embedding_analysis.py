@@ -374,8 +374,9 @@ def build_tda_amatrix(mf_outer, mf_inner, mo_coeff_ao, mo_energy, mo_occ, single
     A_mat = 0.5 * (A_mat + A_mat.T)
     A_mat = to_numpy(A_mat)
 
-    w = np.linalg.eigvalsh(A_mat)
+    w, v = np.linalg.eigh(A_mat)
     return {"excitation_energies": [float(x) for x in np.sort(w)],
+            "eigenvectors": v,
             "a_matrix": A_mat, "nocc": int(nocc), "nvir": int(nvir)}
 
 
@@ -395,6 +396,7 @@ def embedded_tda(emb, mf_outer, ifrag=0, singlet=True, nstates=5):
     return {
         "excitation_energies_au": energies,
         "excitation_energies_ev": [e * HARTREE2EV for e in energies],
+        "eigenvectors": res["eigenvectors"],
         "nocc": res["nocc"],
         "nvir": res["nvir"],
     }
