@@ -25,13 +25,12 @@ import json
 import argparse
 import traceback
 import numpy as np
+import cupy as cp
 from gpu4pyscf.qmmm.embedding.validation import embedding_analysis as ea
-
-
+from pyscf.data.nist import BOHR
 
 # Bohr per Angstrom (pyscf default unit is Angstrom for Mole.atom strings).
-ANG2BOHR = 1.8897259886
-
+ANG2BOHR = 1 / BOHR
 
 # ---------------------------------------------------------------------------
 # gpu4pyscf is imported lazily so that this module (and the pure helpers /
@@ -40,9 +39,52 @@ ANG2BOHR = 1.8897259886
 def _import_gpu_stack():
     from pyscf import gto
     from gpu4pyscf.dft import rks
-    from gpu4pyscf.qmmm.embedding.embedding_dft import SingleFragmentEmbedding
-    return gto, rks, SingleFragmentEmbedding
+    from gpu4pyscf.qmmm.embedding.embedding_dft_try1_ml import SingleFragmentEmbedding_ML, OneStepRKS
+    return gto, rks, SingleFragmentEmbedding_ML, OneStepRKS
 
+# ---------------------------------------------------------------------------
+# ML Evaluator Factory
+# ---------------------------------------------------------------------------
+def make_dummy_eval_density_func(guess_xc):
+    """
+    Creates an evaluation function for OneStepRKS that generates the converged
+    density using `guess_xc`, then evaluates the potentials using the target `xc`.
+    """
+    def eval_func(mol, target_xc, grids):
+        from gpu4pyscf.dft import rks
+        
+        # 1. Obtain converged density based on the specified guess functional
+        mf_guess = rks.RKS(mol, xc=guess_xc)
+        if grids.coords is not None:
+            mf_guess.grids = grids
+        mf_guess.verbose = 0
+        mf_guess.conv_tol = 1.0E-10
+        mf_guess.kernel()
+        dm = cp.asarray(mf_guess.make_rdm1())
+        
+        # 2. Evaluate Exact potentials and energies using target_xc on that guess density
+        mf_target = rks.RKS(mol, xc=target_xc)
+        if grids.coords is not None:
+            mf_target.grids = grids
+            
+        vj, vk = mf_target.get_jk(mol, dm)
+        e_j = 0.5 * float(cp.sum(dm * vj))
+        
+        is_hybrid = mf_target._numint.libxc.is_hybrid_xc(target_xc)
+        if is_hybrid:
+            hyb = mf_target._numint.libxc.hybrid_coeff(target_xc, spin=mol.spin)
+            vk = vk * hyb
+            e_k = 0.5 * float(cp.sum(dm * vk))
+        else:
+            vk = None
+            e_k = 0.0
+            
+        _, e_xc, vxc = mf_target._numint.nr_rks(mol, grids, target_xc, dm)
+        int_rho_vxc = float(cp.sum(dm * vxc))
+        
+        return vj, vk, vxc, e_j, e_k, float(e_xc), int_rho_vxc
+    
+    return eval_func
 
 # ---------------------------------------------------------------------------
 # Uniform Result Template (Ensures strict key alignment)
@@ -54,22 +96,25 @@ def get_default_results():
             "functionals": None,
             "fragment_id": None,
             "n_ao": None,
-            "n_emb_b3lyp_in_pbe": None,
+            "n_emb_high_in_low": None,
             "energies": {
                 "global_lda": None,
-                "global_low_pbe": None,
-                "global_high_b3lyp": None,
-                "embed_b3lyp_in_pbe": None,
-                "embed_pbe_in_pbe": None,
-                "shifted_reference_b3lyp_in_pbe": None,
-                "shifted_reference_pbe_in_pbe": None,
-                "delta_xc_shift_b3lyp_in_pbe": None,
-                "delta_xc_shift_pbe_in_pbe": None,
+                "global_low": None,
+                "global_high": None,
+                "embed_high_in_low_low_guess": None,
+                "embed_high_in_low_lda_guess": None,
+                "embed_low_in_low_low_guess": None,
+                "embed_low_in_low_lda_guess": None,
+                "shifted_reference_high_in_low": None,
+                "shifted_reference_low_in_low": None,
+                "delta_xc_shift_high_in_low": None,
+                "delta_xc_shift_low_in_low": None,
             },
             "derived": {
-                "embed_minus_global_high": None,
-                "shifted_ref_minus_embed_bp": None,
-                "pbe_in_pbe_error": None,
+                "embed_minus_global_high_low_guess": None,
+                "embed_minus_global_high_lda_guess": None,
+                "low_in_low_error_low_guess": None,
+                "low_in_low_error_lda_guess": None,
             },
             "error": None,
             "trace": None
@@ -110,22 +155,21 @@ def get_default_results():
             },
             "energies": {
                 "global_lda": None,
-                "global_pbe": None,
-                "global_b3lyp": None,
-                "embed_b3lyp_in_pbe": None
+                "global_low": None,
+                "global_high": None,
+                "embed_high_in_low": None
             },
             "error": None,
             "trace": None
         }
     }
 
-
 # ---------------------------------------------------------------------------
 # Molecule construction
 # ---------------------------------------------------------------------------
 def build_mol(config, coords=None):
     """Build a pyscf ``Mole`` from a JSON system record."""
-    gto, _, _ = _import_gpu_stack()
+    gto, _, _, _ = _import_gpu_stack()
     elements = config["element"]
     if coords is None:
         coords = np.asarray(config["structure"], dtype=float)
@@ -145,92 +189,111 @@ def build_mol(config, coords=None):
     mol.build()
     return mol
 
-
 def _make_rks(mol, xc, conv_tol=1e-10):
-    _, rks, _ = _import_gpu_stack()
+    _, rks, _, _ = _import_gpu_stack()
     mf = rks.RKS(mol, xc=xc)
     mf.conv_tol = conv_tol
     return mf
-
 
 # ---------------------------------------------------------------------------
 # Energy block (Task 2.2)
 # ---------------------------------------------------------------------------
 def run_energy_block(config, mol=None):
-    """Global SCF energies + embedding energies + shifted reference energy."""
-    _, rks, SingleFragmentEmbedding = _import_gpu_stack()
+    """Global SCF energies + ML embedding energies (with 2 different guesses)."""
+    _, rks, SingleFragmentEmbedding_ML, OneStepRKS = _import_gpu_stack()
     if mol is None:
         mol = build_mol(config)
 
     fragment = [int(a) for a in config["fragment_id"]]
-    xc_lda = config.get("xc_lda", "lda,vwn")
+    xc_lda = config.get("xc_lda", "svwn")
     xc_low = config.get("xc_low", "pbe")
     xc_high = config.get("xc_high", "b3lyp")
 
-    # --- 1. Global low-level functionals to convergence -------------------
+    # --- 1. Global functionalities to convergence -------------------
     mf_lda = _make_rks(mol, xc_lda)
     e_global_lda = float(mf_lda.kernel())
 
-    mf_pbe = _make_rks(mol, xc_low)
-    e_global_low = float(mf_pbe.kernel())
+    mf_low = _make_rks(mol, xc_low)
+    e_global_low = float(mf_low.kernel())
 
-    mf_b3lyp = _make_rks(mol, xc_high)
-    e_global_high = float(mf_b3lyp.kernel())
+    mf_high = _make_rks(mol, xc_high)
+    e_global_high = float(mf_high.kernel())
 
-    # 1-step guess: the converged PBE density seeds the embedding solvers.
-    dm_guess_low = mf_pbe.make_rdm1()
+    # --- ML Guess functions ---
+    eval_low_guess = make_dummy_eval_density_func(xc_low)
+    eval_lda_guess = make_dummy_eval_density_func(xc_lda)
 
-    # --- 2a. B3LYP-in-PBE embedding --------------------------------------
-    mf_outer_bp = _make_rks(mol, xc_low)
-    mf_outer_bp.kernel(dm0=dm_guess_low)
-    mf_inner_bp = _make_rks(mol, xc_high)
-    emb_bp = SingleFragmentEmbedding(mf_outer_bp, mf_inner_bp, fragment)
-    e_embed_b3lyp_in_pbe = float(emb_bp.kernel())
+    # --- 2a. High-in-Low embedding (Low guess) ------------------------
+    mf_outer_hl_low = OneStepRKS(mol, eval_low_guess, xc=xc_low)
+    mf_inner_hl_low = _make_rks(mol, xc_high)
+    emb_hl_low = SingleFragmentEmbedding_ML(mf_outer_hl_low, mf_inner_hl_low, fragment)
+    e_embed_high_in_low_low_guess = float(emb_hl_low.kernel())
 
-    # Shifted reference energy for the B3LYP-in-PBE pairing.
-    shift_bp = ea.shifted_reference_energy(mf_outer_bp, mf_inner_bp, emb_bp)
+    # --- 2b. High-in-Low embedding (LDA guess) ------------------------
+    mf_outer_hl_lda = OneStepRKS(mol, eval_lda_guess, xc=xc_low)
+    mf_inner_hl_lda = _make_rks(mol, xc_high)
+    emb_hl_lda = SingleFragmentEmbedding_ML(mf_outer_hl_lda, mf_inner_hl_lda, fragment)
+    e_embed_high_in_low_lda_guess = float(emb_hl_lda.kernel())
 
-    # --- 2b. PBE-in-PBE embedding (sanity / exactness pairing) -----------
-    mf_outer_pp = _make_rks(mol, xc_low)
-    mf_outer_pp.kernel(dm0=dm_guess_low)
-    mf_inner_pp = _make_rks(mol, xc_low)
-    emb_pp = SingleFragmentEmbedding(mf_outer_pp, mf_inner_pp, fragment)
-    e_embed_pbe_in_pbe = float(emb_pp.kernel())
-    shift_pp = ea.shifted_reference_energy(mf_outer_pp, mf_inner_pp, emb_pp)
+    # --- 2c. Low-in-Low embedding (Low guess) --------------------------
+    mf_outer_ll_low = OneStepRKS(mol, eval_low_guess, xc=xc_low)
+    mf_inner_ll_low = _make_rks(mol, xc_low)
+    emb_ll_low = SingleFragmentEmbedding_ML(mf_outer_ll_low, mf_inner_ll_low, fragment)
+    e_embed_low_in_low_low_guess = float(emb_ll_low.kernel())
+
+    # --- 2d. Low-in-Low embedding (LDA guess) --------------------------
+    mf_outer_ll_lda = OneStepRKS(mol, eval_lda_guess, xc=xc_low)
+    mf_inner_ll_lda = _make_rks(mol, xc_low)
+    emb_ll_lda = SingleFragmentEmbedding_ML(mf_outer_ll_lda, mf_inner_ll_lda, fragment)
+    e_embed_low_in_low_lda_guess = float(emb_ll_lda.kernel())
+
+    # Try shifted reference energy (may fail with CAS-DFT due to missing ONIOM correction attributes)
+    try:
+        shift_hl = ea.shifted_reference_energy(mf_outer_hl_low, mf_inner_hl_low, emb_hl_low)
+    except Exception:
+        shift_hl = {"e_ref_shifted": None, "delta_xc_shift": None}
+        
+    try:
+        shift_ll = ea.shifted_reference_energy(mf_outer_ll_low, mf_inner_ll_low, emb_ll_low)
+    except Exception:
+        shift_ll = {"e_ref_shifted": None, "delta_xc_shift": None}
 
     results = {
         "functionals": {"lda": xc_lda, "low": xc_low, "high": xc_high},
         "fragment_id": fragment,
         "n_ao": int(mol.nao_nr()),
-        "n_emb_b3lyp_in_pbe": int(emb_bp.B[0].shape[1]),
+        "n_emb_high_in_low": int(emb_hl_low.B[0].shape[1]),
         "energies": {
             "global_lda": e_global_lda,
-            "global_low_pbe": e_global_low,
-            "global_high_b3lyp": e_global_high,
-            "embed_b3lyp_in_pbe": e_embed_b3lyp_in_pbe,
-            "embed_pbe_in_pbe": e_embed_pbe_in_pbe,
-            "shifted_reference_b3lyp_in_pbe": shift_bp["e_ref_shifted"],
-            "shifted_reference_pbe_in_pbe": shift_pp["e_ref_shifted"],
-            "delta_xc_shift_b3lyp_in_pbe": shift_bp["delta_xc_shift"],
-            "delta_xc_shift_pbe_in_pbe": shift_pp["delta_xc_shift"],
+            "global_low": e_global_low,
+            "global_high": e_global_high,
+            "embed_high_in_low_low_guess": e_embed_high_in_low_low_guess,
+            "embed_high_in_low_lda_guess": e_embed_high_in_low_lda_guess,
+            "embed_low_in_low_low_guess": e_embed_low_in_low_low_guess,
+            "embed_low_in_low_lda_guess": e_embed_low_in_low_lda_guess,
+            "shifted_reference_high_in_low": shift_hl["e_ref_shifted"],
+            "shifted_reference_low_in_low": shift_ll["e_ref_shifted"],
+            "delta_xc_shift_high_in_low": shift_hl["delta_xc_shift"],
+            "delta_xc_shift_low_in_low": shift_ll["delta_xc_shift"],
         },
         "derived": {
-            "embed_minus_global_high": e_embed_b3lyp_in_pbe - e_global_high,
-            "shifted_ref_minus_embed_bp":
-                shift_bp["e_ref_shifted"] - e_embed_b3lyp_in_pbe,
-            "pbe_in_pbe_error": e_embed_pbe_in_pbe - e_global_low,
+            "embed_minus_global_high_low_guess": e_embed_high_in_low_low_guess - e_global_high,
+            "embed_minus_global_high_lda_guess": e_embed_high_in_low_lda_guess - e_global_high,
+            "low_in_low_error_low_guess": e_embed_low_in_low_low_guess - e_global_low,
+            "low_in_low_error_lda_guess": e_embed_low_in_low_lda_guess - e_global_low,
         },
     }
     
+    # We pass the Low-guess High-in-Low instance to 'live' for downstream Orbital/TDA blocks
     live = {
         "mol": mol,
-        "mf_lda": mf_lda, "mf_pbe": mf_pbe, "mf_b3lyp": mf_b3lyp,
-        "emb_b3lyp_in_pbe": emb_bp, "mf_outer_bp": mf_outer_bp,
-        "mf_inner_bp": mf_inner_bp,
-        "emb_pbe_in_pbe": emb_pp,
+        "mf_lda": mf_lda, "mf_low": mf_low, "mf_high": mf_high,
+        "emb_high_in_low": emb_hl_low, 
+        "mf_outer_hl": mf_outer_hl_low,
+        "mf_inner_hl": mf_inner_hl_low,
+        "emb_low_in_low": emb_ll_low,
     }
     return results, live
-
 
 # ---------------------------------------------------------------------------
 # Single-point bond test (Task 2.3)
@@ -265,7 +328,6 @@ def resolve_bond_geometry(config):
     })
     return coords, info
 
-
 def run_bond_block(config):
     """Single-point bond test driven by the JSON ``bond_shift_*`` annotations."""
     coords, info = resolve_bond_geometry(config)
@@ -273,12 +335,11 @@ def run_bond_block(config):
 
     energies = {
         "global_lda": _safe_global_energy(config, coords, config.get("xc_lda", "lda,vwn")),
-        "global_pbe": _safe_global_energy(config, coords, config.get("xc_low", "pbe")),
-        "global_b3lyp": _safe_global_energy(config, coords, config.get("xc_high", "b3lyp")),
-        "embed_b3lyp_in_pbe": _safe_embed_energy(config, coords, fragment),
+        "global_low": _safe_global_energy(config, coords, config.get("xc_low", "pbe")),
+        "global_high": _safe_global_energy(config, coords, config.get("xc_high", "b3lyp")),
+        "embed_high_in_low": _safe_embed_energy(config, coords, fragment),
     }
     return {"shift": info, "energies": energies}
-
 
 def _safe_global_energy(config, coords, xc):
     try:
@@ -288,30 +349,31 @@ def _safe_global_energy(config, coords, xc):
     except Exception:
         return float("nan")
 
-
 def _safe_embed_energy(config, coords, fragment):
     try:
-        _, _, SingleFragmentEmbedding = _import_gpu_stack()
+        _, _, SingleFragmentEmbedding_ML, OneStepRKS = _import_gpu_stack()
         mol = build_mol(config, coords=coords)
-        mf_outer = _make_rks(mol, config.get("xc_low", "pbe"))
-        mf_outer.kernel()
+        
+        # Use low xc guess by default for the bond stretch ML embedding
+        eval_low = make_dummy_eval_density_func(config.get("xc_low", "pbe"))
+        mf_outer = OneStepRKS(mol, eval_low, xc=config.get("xc_low", "pbe"))
         mf_inner = _make_rks(mol, config.get("xc_high", "b3lyp"))
-        emb = SingleFragmentEmbedding(mf_outer, mf_inner, fragment)
+        
+        emb = SingleFragmentEmbedding_ML(mf_outer, mf_inner, fragment)
         return float(emb.kernel())
     except Exception:
         return float("nan")
-
 
 # ---------------------------------------------------------------------------
 # Local orbital energies (Task 2.4)
 # ---------------------------------------------------------------------------
 def run_orbital_block(live):
     """Core-region HOMO / LUMO from the embedding solver vs the global reference."""
-    emb = live["emb_b3lyp_in_pbe"]
+    emb = live["emb_high_in_low"]
     mf_inner = emb.mf_inner[0]
     embed_hl = ea.core_homo_lumo(mf_inner)
 
-    ref_hl = ea.core_homo_lumo(live["mf_b3lyp"])
+    ref_hl = ea.core_homo_lumo(live["mf_high"])
 
     return {
         "embedding": embed_hl,
@@ -322,16 +384,14 @@ def run_orbital_block(live):
                        else embed_hl["lumo"] - ref_hl["lumo"]),
     }
 
-
 # ---------------------------------------------------------------------------
 # Local excited states (Task 2.5)
 # ---------------------------------------------------------------------------
 def run_tda_block(live, nstates=5):
     """Local TDA excitation energies from explicit A-matrix diagonalisation."""
-    emb = live["emb_b3lyp_in_pbe"]
-    mf_outer = live["mf_outer_bp"]
+    emb = live["emb_high_in_low"]
+    mf_outer = live["mf_outer_hl"]
     return ea.embedded_tda(emb, mf_outer, ifrag=0, singlet=True, nstates=nstates)
-
 
 # ---------------------------------------------------------------------------
 # Population & density analysis (Task 2.6)
@@ -339,8 +399,8 @@ def run_tda_block(live, nstates=5):
 def run_population_block(config, live, outdir, name):
     """Mulliken charges (on the fragment atoms) + density-difference cube."""
     mol = live["mol"]
-    emb = live["emb_b3lyp_in_pbe"]
-    mf_high = live["mf_b3lyp"]
+    emb = live["emb_high_in_low"]
+    mf_high = live["mf_high"]
 
     s_ao = mf_high.get_ovlp()
     nao = int(mol.nao_nr())
@@ -369,7 +429,6 @@ def run_population_block(config, live, outdir, name):
                           for k in charges_embed},
         "cube_file": cube_written,
     }
-
 
 # ---------------------------------------------------------------------------
 # Top-level orchestration
@@ -430,7 +489,6 @@ def process_single(config, name, outdir="results"):
 
     return blocks, "ok"
 
-
 def _build_arg_parser():
     p = argparse.ArgumentParser(
         description="Run the embedding validation pipeline for all tasks in a JSON.")
@@ -438,7 +496,6 @@ def _build_arg_parser():
     p.add_argument("--outjson", default="results.json", help="Path to output JSON.")
     p.add_argument("--outdir", default="results", help="Directory for cube files etc.")
     return p
-
 
 def main(argv=None):
     args = _build_arg_parser().parse_args(argv)
@@ -463,7 +520,6 @@ def main(argv=None):
         json.dump(systems, fh, indent=4)
         
     print(f"\nAll tasks processed. Results saved to {args.outjson}")
-
 
 if __name__ == "__main__":
     main()
