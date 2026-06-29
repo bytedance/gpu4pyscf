@@ -97,28 +97,38 @@ def build_system_entry(path, basis_set, xc_low, xc_high, xc_lda,
 
 def generate(xyz_path, out_path, basis_set="def2-svp", xc_low="pbe",
              xc_high="b3lyp", xc_lda="lda,vwn", charge=0, spin=0,
-             fragment_id=None, bond_test_id=None,
-             bond_shift_flag=False, bond_shift_scale=1.0):
-    """Generate a test_systems.json for a single .xyz file."""
+             fragment_id_list=None, bond_test_id=None,
+             bond_shift_flag=False, bond_shift_scale_list=None):
+    """Generate a test_systems.json for a single .xyz file with parameter scanning."""
 
     if not os.path.isfile(xyz_path):
         raise FileNotFoundError(f"File not found: {xyz_path}")
 
-    fragment_id = list(fragment_id or [])
+    # Initialize lists for parameter scanning
+    fragment_id_list = fragment_id_list or [[]]
+    bond_shift_scale_list = bond_shift_scale_list or [1.0]
     bond_test_id = list(bond_test_id or [])
 
     systems = {}
-    name = molecule_name_from_path(xyz_path)
+    base_name = molecule_name_from_path(xyz_path)
     
-    try:
-        systems[name] = build_system_entry(
-            xyz_path, basis_set, xc_low, xc_high, xc_lda,
-            charge=charge, spin=spin, fragment_id=fragment_id,
-            bond_test_id=bond_test_id,
-            bond_shift_flag=bond_shift_flag,
-            bond_shift_scale=bond_shift_scale)
-    except Exception as exc:                  # keep going on a bad file
-        systems[name] = {"error": f"failed to parse: {exc}"}
+    # Nested loops to generate the Cartesian product of all scan parameters
+    for fragment_id in fragment_id_list:
+        for scale in bond_shift_scale_list:
+            
+            # Generate a unique task key based on scan parameters
+            frag_len = len(fragment_id)
+            task_name = f"{base_name}_frag{frag_len}_scale{scale:.2f}"
+            
+            try:
+                systems[task_name] = build_system_entry(
+                    xyz_path, basis_set, xc_low, xc_high, xc_lda,
+                    charge=charge, spin=spin, fragment_id=fragment_id,
+                    bond_test_id=bond_test_id,
+                    bond_shift_flag=bond_shift_flag,
+                    bond_shift_scale=scale)
+            except Exception as exc:                  # keep going on a bad file
+                systems[task_name] = {"error": f"failed to parse: {exc}"}
 
     with open(out_path, "w") as fh:
         json.dump(systems, fh, indent=4)

@@ -13,53 +13,20 @@
 # limitations under the License.
 
 """
-Single-molecule core calculation driver.
+Batch molecule core calculation driver.
 
-Reads ONE molecule record from ``test_systems.json`` and runs the full
-validation pipeline:
-
-1.  Global LDA / PBE / B3LYP SCF to convergence.  The converged low-level
-    density is used as a 1-step guess for the embedding solvers.
-2.  ``B3LYP-in-PBE`` and ``PBE-in-PBE`` embedding (delta method).
-3.  Multi-dimensional energies:
-      * Global low-level (PBE)            E_global^low
-      * Global high-level (B3LYP)         E_global^high
-      * Embedding energy                  E_embed
-      * Shifted reference energy          E_ref^shifted  (new definition)
-4.  Single-point bond test: if ``bond_shift_flag`` is set in the JSON config the
-    target bond (``bond_test_id`` = one ``[i, j]`` atom pair) is rescaled by the
-    given ``bond_shift_scale`` ratio and the global LDA/PBE/B3LYP plus the
-    B3LYP-in-PBE embedding energies are evaluated ONCE on that single geometry
-    (no PES scan, no equilibrium fit, no fragment-motion bookkeeping).
-5.  Core-region HOMO / LUMO (embedding vs reference).
-6.  Local excited states via explicit TDA A-matrix assembly + diagonalisation.
-7.  Population & density analysis: Mulliken charges and a
-    ``(rho_embedding - rho_global_high)`` density-difference cube.
-
-CRITICAL: every density / orbital quantity that comes out of the inner solver
-``mf_inner`` is in the *embedding basis*; this driver always projects it back to
-the AO basis with B (via :mod:`embedding_analysis`) before any global property.
-
-All scalar results are written to ``result_<molecule>.json``.  The cube file
-(binary) is written alongside it.
-
-Usage
------
-    python run_single_job.py --json test_systems.json --name water \
-        --outdir results
+Reads ALL molecule records from a generated ``test_systems.json`` and runs the full
+validation pipeline. The output JSON strictly mirrors the input structure, with a
+uniform ``results`` dictionary appended to each task.
 """
 
 import os
 import json
 import argparse
 import traceback
-
 import numpy as np
+from gpu4pyscf.qmmm.embedding.validation import embedding_analysis as ea
 
-try:
-    from . import embedding_analysis as ea
-except Exception:                                   # script-mode import
-    import embedding_analysis as ea
 
 
 # Bohr per Angstrom (pyscf default unit is Angstrom for Mole.atom strings).
@@ -78,20 +45,86 @@ def _import_gpu_stack():
 
 
 # ---------------------------------------------------------------------------
+# Uniform Result Template (Ensures strict key alignment)
+# ---------------------------------------------------------------------------
+def get_default_results():
+    """Define a strictly uniform dictionary structure for all possible properties."""
+    return {
+        "energies": {
+            "functionals": None,
+            "fragment_id": None,
+            "n_ao": None,
+            "n_emb_b3lyp_in_pbe": None,
+            "energies": {
+                "global_lda": None,
+                "global_low_pbe": None,
+                "global_high_b3lyp": None,
+                "embed_b3lyp_in_pbe": None,
+                "embed_pbe_in_pbe": None,
+                "shifted_reference_b3lyp_in_pbe": None,
+                "shifted_reference_pbe_in_pbe": None,
+                "delta_xc_shift_b3lyp_in_pbe": None,
+                "delta_xc_shift_pbe_in_pbe": None,
+            },
+            "derived": {
+                "embed_minus_global_high": None,
+                "shifted_ref_minus_embed_bp": None,
+                "pbe_in_pbe_error": None,
+            },
+            "error": None,
+            "trace": None
+        },
+        "orbitals": {
+            "embedding": None,
+            "reference_global_high": None,
+            "homo_shift": None,
+            "lumo_shift": None,
+            "error": None,
+            "trace": None
+        },
+        "tda": {
+            "excitation_energies_ev": None,
+            "eigenvectors": None,
+            "oscillator_strengths": None,
+            "nocc": None,
+            "nvir": None,
+            "error": None,
+            "trace": None
+        },
+        "population": {
+            "mulliken_embedding": None,
+            "mulliken_global_high": None,
+            "mulliken_diff": None,
+            "cube_file": None,
+            "error": None,
+            "trace": None
+        },
+        "bond": {
+            "shift": {
+                "bond_shift_flag": None,
+                "bond_shift_scale": None,
+                "bond_atoms": None,
+                "applied": None,
+                "r0_angstrom": None,
+                "r_shifted_angstrom": None
+            },
+            "energies": {
+                "global_lda": None,
+                "global_pbe": None,
+                "global_b3lyp": None,
+                "embed_b3lyp_in_pbe": None
+            },
+            "error": None,
+            "trace": None
+        }
+    }
+
+
+# ---------------------------------------------------------------------------
 # Molecule construction
 # ---------------------------------------------------------------------------
 def build_mol(config, coords=None):
-    """Build a pyscf ``Mole`` from a JSON system record.
-
-    Parameters
-    ----------
-    config : dict
-        One ``test_systems.json`` entry (element / structure / charge / spin /
-        basis_set).
-    coords : optional (N,3) array
-        Override geometry (Angstrom); used by the PES scan.  Defaults to
-        ``config['structure']``.
-    """
+    """Build a pyscf ``Mole`` from a JSON system record."""
     gto, _, _ = _import_gpu_stack()
     elements = config["element"]
     if coords is None:
@@ -124,10 +157,7 @@ def _make_rks(mol, xc, conv_tol=1e-10):
 # Energy block (Task 2.2)
 # ---------------------------------------------------------------------------
 def run_energy_block(config, mol=None):
-    """Global SCF energies + embedding energies + shifted reference energy.
-
-    Returns a JSON-serialisable dict.
-    """
+    """Global SCF energies + embedding energies + shifted reference energy."""
     _, rks, SingleFragmentEmbedding = _import_gpu_stack()
     if mol is None:
         mol = build_mol(config)
@@ -184,7 +214,6 @@ def run_energy_block(config, mol=None):
             "delta_xc_shift_b3lyp_in_pbe": shift_bp["delta_xc_shift"],
             "delta_xc_shift_pbe_in_pbe": shift_pp["delta_xc_shift"],
         },
-        # Differences that are physically meaningful for downstream analysis.
         "derived": {
             "embed_minus_global_high": e_embed_b3lyp_in_pbe - e_global_high,
             "shifted_ref_minus_embed_bp":
@@ -192,8 +221,7 @@ def run_energy_block(config, mol=None):
             "pbe_in_pbe_error": e_embed_pbe_in_pbe - e_global_low,
         },
     }
-    # Hand back the live objects so the caller can reuse them for the
-    # orbital / TDA / population blocks without re-running SCF.
+    
     live = {
         "mol": mol,
         "mf_lda": mf_lda, "mf_pbe": mf_pbe, "mf_b3lyp": mf_b3lyp,
@@ -208,20 +236,7 @@ def run_energy_block(config, mol=None):
 # Single-point bond test (Task 2.3)
 # ---------------------------------------------------------------------------
 def resolve_bond_geometry(config):
-    """Build the single geometry on which the bond test is evaluated.
-
-    Pure-numpy / no-GPU helper so it stays unit-testable on a CPU box.
-
-    Reads the JSON annotations:
-      * ``bond_shift_flag``  -- whether to rescale the target bond at all;
-      * ``bond_shift_scale`` -- the ratio applied to that one bond;
-      * ``bond_test_id``     -- the ``[i, j]`` atom pair defining the bond.
-
-    Returns ``(coords, info)`` where *coords* is the (N,3) geometry to compute on
-    (the original structure when the shift is disabled) and *info* records what
-    was done.  When the shift is requested but no valid bond pair is available
-    the original geometry is returned with ``applied=False``.
-    """
+    """Build the single geometry on which the bond test is evaluated."""
     base_coords = np.asarray(config["structure"], dtype=float)
     shift_flag = bool(config.get("bond_shift_flag", False))
     scale = float(config.get("bond_shift_scale", 1.0))
@@ -252,13 +267,7 @@ def resolve_bond_geometry(config):
 
 
 def run_bond_block(config):
-    """Single-point bond test driven by the JSON ``bond_shift_*`` annotations.
-
-    The geometry is resolved once (original, or with exactly one bond rescaled),
-    then the global LDA/PBE/B3LYP and the B3LYP-in-PBE embedding total energies
-    are evaluated a single time on that geometry.  There is deliberately no PES
-    scan, no equilibrium fit and no fragment-motion handling.
-    """
+    """Single-point bond test driven by the JSON ``bond_shift_*`` annotations."""
     coords, info = resolve_bond_geometry(config)
     fragment = [int(a) for a in config["fragment_id"]]
 
@@ -272,7 +281,6 @@ def run_bond_block(config):
 
 
 def _safe_global_energy(config, coords, xc):
-    """Global SCF energy at *coords*; returns NaN on SCF failure."""
     try:
         mol = build_mol(config, coords=coords)
         mf = _make_rks(mol, xc)
@@ -282,7 +290,6 @@ def _safe_global_energy(config, coords, xc):
 
 
 def _safe_embed_energy(config, coords, fragment):
-    """B3LYP-in-PBE embedding energy at *coords*; NaN on failure."""
     try:
         _, _, SingleFragmentEmbedding = _import_gpu_stack()
         mol = build_mol(config, coords=coords)
@@ -304,7 +311,6 @@ def run_orbital_block(live):
     mf_inner = emb.mf_inner[0]
     embed_hl = ea.core_homo_lumo(mf_inner)
 
-    # Reference: the global high-level (B3LYP) frontier orbitals.
     ref_hl = ea.core_homo_lumo(live["mf_b3lyp"])
 
     return {
@@ -331,12 +337,7 @@ def run_tda_block(live, nstates=5):
 # Population & density analysis (Task 2.6)
 # ---------------------------------------------------------------------------
 def run_population_block(config, live, outdir, name):
-    """Mulliken charges (on the fragment atoms) + density-difference cube.
-
-    Both quantities use AO-basis densities: the embedding density is built as
-    ``D_core + B D_emb B^T`` (full AO), and the global B3LYP density is already
-    AO-basis.
-    """
+    """Mulliken charges (on the fragment atoms) + density-difference cube."""
     mol = live["mol"]
     emb = live["emb_b3lyp_in_pbe"]
     mf_high = live["mf_b3lyp"]
@@ -344,19 +345,16 @@ def run_population_block(config, live, outdir, name):
     s_ao = mf_high.get_ovlp()
     nao = int(mol.nao_nr())
 
-    # Embedding total density projected to the full AO basis.
     dm_embed_ao = ea.full_ao_embedding_density(emb, ifrag=0)
     ea.assert_full_ao(dm_embed_ao, nao, "embedding density")
 
     dm_global_high_ao = mf_high.make_rdm1()
     ea.assert_full_ao(dm_global_high_ao, nao, "global-high density")
 
-    # Mulliken charges on the requested (fragment) atoms.
     frag_atoms = [int(a) for a in config["fragment_id"]]
     charges_embed = ea.mulliken_charges(mol, dm_embed_ao, s_ao, atom_ids=frag_atoms)
     charges_high = ea.mulliken_charges(mol, dm_global_high_ao, s_ao, atom_ids=frag_atoms)
 
-    # Density-difference cube.
     cube_path = os.path.join(outdir, f"density_diff_{name}.cube")
     try:
         ea.density_difference_cube(mol, dm_embed_ao, dm_global_high_ao, cube_path)
@@ -377,79 +375,94 @@ def run_population_block(config, live, outdir, name):
 # Top-level orchestration
 # ---------------------------------------------------------------------------
 def process_single(config, name, outdir="results"):
-    """Run every enabled block for one molecule and return the result dict."""
+    """Run every enabled block for one molecule and return the uniform result dict."""
     os.makedirs(outdir, exist_ok=True)
-    result = {"molecule_name": name, "status": "ok", "blocks": {}}
-
-    # Energy block (also yields the live SCF/embedding objects).
-    if config.get("energy_flag", True):
-        energy_res, live = run_energy_block(config)
-        result["blocks"]["energies"] = energy_res
-    else:
-        _, live = run_energy_block(config)  # still needed for later blocks
-
-    # Orbital energies.
+    
+    # Pre-fill all fields with None to guarantee perfectly matching keys
+    blocks = get_default_results()
+    
     try:
-        result["blocks"]["orbitals"] = run_orbital_block(live)
+        # Energy block
+        if config.get("energy_flag", True):
+            energy_res, live = run_energy_block(config)
+            blocks["energies"].update(energy_res)
+        else:
+            _, live = run_energy_block(config)
     except Exception as exc:
-        result["blocks"]["orbitals"] = {"error": str(exc)}
+        blocks["energies"]["error"] = str(exc)
+        blocks["energies"]["trace"] = traceback.format_exc()
+        return blocks, "failed" # Stop here: we need 'live' for remaining blocks
 
-    # Local TDA.
+    # Orbital energies
+    try:
+        orbital_res = run_orbital_block(live)
+        blocks["orbitals"].update(orbital_res)
+    except Exception as exc:
+        blocks["orbitals"]["error"] = str(exc)
+        blocks["orbitals"]["trace"] = traceback.format_exc()
+
+    # Local TDA
     if config.get("tda_flag", True):
         try:
-            result["blocks"]["tda"] = run_tda_block(live)
+            tda_res = run_tda_block(live)
+            blocks["tda"].update(tda_res)
         except Exception as exc:
-            result["blocks"]["tda"] = {"error": str(exc),
-                                       "trace": traceback.format_exc()}
+            blocks["tda"]["error"] = str(exc)
+            blocks["tda"]["trace"] = traceback.format_exc()
 
-    # Population & density.
+    # Population & density
     if config.get("population_flag", True):
         try:
-            result["blocks"]["population"] = run_population_block(
-                config, live, outdir, name)
+            pop_res = run_population_block(config, live, outdir, name)
+            blocks["population"].update(pop_res)
         except Exception as exc:
-            result["blocks"]["population"] = {"error": str(exc),
-                                              "trace": traceback.format_exc()}
+            blocks["population"]["error"] = str(exc)
+            blocks["population"]["trace"] = traceback.format_exc()
 
-    # Single-point bond test (driven by the JSON bond_shift_* annotations).
+    # Single-point bond test
     if config.get("bond_shift_flag", False) or config.get("bond_test_id"):
         try:
-            result["blocks"]["bond"] = run_bond_block(config)
+            bond_res = run_bond_block(config)
+            blocks["bond"].update(bond_res)
         except Exception as exc:
-            result["blocks"]["bond"] = {"error": str(exc),
-                                        "trace": traceback.format_exc()}
+            blocks["bond"]["error"] = str(exc)
+            blocks["bond"]["trace"] = traceback.format_exc()
 
-    out_path = os.path.join(outdir, f"result_{name}.json")
-    with open(out_path, "w") as fh:
-        json.dump(result, fh, indent=4)
-    result["_output_path"] = out_path
-    return result
-
-
-def load_config(json_path, name):
-    """Load a single molecule record from ``test_systems.json``."""
-    with open(json_path, "r") as fh:
-        systems = json.load(fh)
-    if name not in systems:
-        raise KeyError(f"'{name}' not found in {json_path}. "
-                       f"Available: {list(systems)}")
-    return systems[name]
+    return blocks, "ok"
 
 
 def _build_arg_parser():
     p = argparse.ArgumentParser(
-        description="Run the embedding validation pipeline for one molecule.")
-    p.add_argument("--json", required=True, help="Path to test_systems.json.")
-    p.add_argument("--name", required=True, help="Molecule name (JSON key).")
-    p.add_argument("--outdir", default="results", help="Output directory.")
+        description="Run the embedding validation pipeline for all tasks in a JSON.")
+    p.add_argument("--json", required=True, help="Path to input test_systems.json.")
+    p.add_argument("--outjson", default="results.json", help="Path to output JSON.")
+    p.add_argument("--outdir", default="results", help="Directory for cube files etc.")
     return p
 
 
 def main(argv=None):
     args = _build_arg_parser().parse_args(argv)
-    config = load_config(args.json, args.name)
-    result = process_single(config, args.name, outdir=args.outdir)
-    print(f"[{args.name}] status={result['status']} -> {result['_output_path']}")
+    
+    with open(args.json, "r") as fh:
+        systems = json.load(fh)
+        
+    for task_name, config in systems.items():
+        print(f"Processing task: {task_name} ...")
+        
+        if "error" in config:
+            print(f"  Skipping {task_name} due to input parsing error: {config['error']}")
+            continue
+            
+        blocks, status = process_single(config, task_name, outdir=args.outdir)
+        
+        # Inject uniform results directly into the structure
+        config["status"] = status
+        config["results"] = blocks
+        
+    with open(args.outjson, "w") as fh:
+        json.dump(systems, fh, indent=4)
+        
+    print(f"\nAll tasks processed. Results saved to {args.outjson}")
 
 
 if __name__ == "__main__":
