@@ -24,44 +24,54 @@ def parse_xyz(path):
     Returns
     -------
     (elements, coords) : (list[str], (N,3) float ndarray) in Angstrom.
-
-    Supports the standard XYZ layout (count line, comment line, then
-    ``element x y z`` rows) and is tolerant of blank/short files.
     """
     with open(path, "r") as fh:
         raw = [ln.rstrip("\n") for ln in fh]
 
-    lines = [ln for ln in raw if ln.strip() != ""]
-    if not lines:
+    if not raw:
         raise ValueError(f"{path}: empty xyz file")
 
     # Optional leading atom-count line.
     start = 0
     natm_declared = None
-    if re.fullmatch(r"\s*\d+\s*", lines[0]):
-        natm_declared = int(lines[0])
-        # The line after the count is a free-form comment; skip it if present.
-        start = 2 if len(lines) > 1 else 1
+    
+    # Check if the first line is the number of atoms
+    if re.fullmatch(r"\s*\d+\s*", raw[0]):
+        natm_declared = int(raw[0])
+        # If atom count is declared, skip the first line (count) 
+        # and the second line (comment, even if it is empty)
+        start = 2 if len(raw) > 1 else 1
 
     elements, coords = [], []
-    for ln in lines[start:]:
+    
+    # Iterate starting from the correct line (after count and comment)
+    for ln in raw[start:]:
+        # Filter out any extra empty lines during iteration
+        if ln.strip() == "":
+            continue
+            
         tok = ln.split()
         if len(tok) < 4:
             continue
+            
         sym = tok[0]
         sym = sym[0].upper() + sym[1:].lower() if len(sym) > 1 else sym.upper()
+        
         try:
             x, y, z = float(tok[1]), float(tok[2]), float(tok[3])
         except ValueError:
             continue
+            
         elements.append(sym)
         coords.append([x, y, z])
 
     if not elements:
         raise ValueError(f"{path}: no atoms parsed")
+        
     if natm_declared is not None and natm_declared != len(elements):
         # Trust the actual parsed rows but warn via the comment in JSON later.
         pass
+        
     return elements, np.asarray(coords, dtype=float)
 
 
@@ -128,6 +138,62 @@ def generate(xyz_path, out_path, basis_set="def2-svp", xc_low="pbe",
                     bond_shift_flag=bond_shift_flag,
                     bond_shift_scale=scale)
             except Exception as exc:                  # keep going on a bad file
+                systems[task_name] = {"error": f"failed to parse: {exc}"}
+
+    with open(out_path, "w") as fh:
+        json.dump(systems, fh, indent=4)
+    return systems
+
+
+def generate_from_xyz_list(xyz_path_list, out_path, basis_set="def2-svp", xc_low="pbe",
+                           xc_high="b3lyp", xc_lda="lda,vwn", charge=0, spin=0,
+                           fragment_id_list=None, bond_test_id=None,
+                           bond_shift_flag=False, bond_shift_scale_list=None):
+    """Generate a test_systems.json from a list of manually shifted .xyz files.
+    
+    The `xyz_path_list` and `bond_shift_scale_list` must have the same length.
+    Each file corresponds to a specific scaled geometry.
+    """
+
+    if not xyz_path_list:
+        raise ValueError("xyz_path_list cannot be empty.")
+        
+    bond_shift_scale_list = bond_shift_scale_list or [1.0] * len(xyz_path_list)
+    if len(xyz_path_list) != len(bond_shift_scale_list):
+        raise ValueError("The length of xyz_path_list and bond_shift_scale_list must match.")
+
+    fragment_id_list = fragment_id_list or [[]]
+    bond_test_id = list(bond_test_id or [])
+
+    systems = {}
+    
+    # Extract the base name from the first xyz file to keep the task naming consistent
+    # You might want to adjust this if your pre-shifted files have very different names
+    base_name = molecule_name_from_path(xyz_path_list[0])
+    
+    # Remove any trailing "_scaleX.XX" from the base name if it exists in your filename
+    base_name = re.sub(r'_scale\d+\.\d+', '', base_name)
+
+    # Nested loops: Cartesian product of fragment sizes and (xyz_file + scale) pairs
+    for fragment_id in fragment_id_list:
+        for xyz_path, scale in zip(xyz_path_list, bond_shift_scale_list):
+            
+            if not os.path.isfile(xyz_path):
+                print(f"Warning: File not found: {xyz_path}")
+                continue
+                
+            # Generate a unique task key
+            frag_len = len(fragment_id)
+            task_name = f"{base_name}_frag{frag_len}_scale{scale:.2f}"
+            
+            try:
+                systems[task_name] = build_system_entry(
+                    xyz_path, basis_set, xc_low, xc_high, xc_lda,
+                    charge=charge, spin=spin, fragment_id=fragment_id,
+                    bond_test_id=bond_test_id,
+                    bond_shift_flag=bond_shift_flag,
+                    bond_shift_scale=scale)
+            except Exception as exc:
                 systems[task_name] = {"error": f"failed to parse: {exc}"}
 
     with open(out_path, "w") as fh:

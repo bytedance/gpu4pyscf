@@ -103,18 +103,12 @@ def get_default_results():
                 "global_high": None,
                 "embed_high_in_low_low_guess": None,
                 "embed_high_in_low_lda_guess": None,
-                "embed_low_in_low_low_guess": None,
-                "embed_low_in_low_lda_guess": None,
                 "shifted_reference_high_in_low": None,
-                "shifted_reference_low_in_low": None,
                 "delta_xc_shift_high_in_low": None,
-                "delta_xc_shift_low_in_low": None,
             },
             "derived": {
                 "embed_minus_global_high_low_guess": None,
                 "embed_minus_global_high_lda_guess": None,
-                "low_in_low_error_low_guess": None,
-                "low_in_low_error_lda_guess": None,
             },
             "error": None,
             "trace": None
@@ -129,7 +123,7 @@ def get_default_results():
         },
         "tda": {
             "excitation_energies_ev": None,
-            "eigenvectors": None,
+            # "eigenvectors": None,
             "oscillator_strengths": None,
             "nocc": None,
             "nvir": None,
@@ -141,24 +135,6 @@ def get_default_results():
             "mulliken_global_high": None,
             "mulliken_diff": None,
             "cube_file": None,
-            "error": None,
-            "trace": None
-        },
-        "bond": {
-            "shift": {
-                "bond_shift_flag": None,
-                "bond_shift_scale": None,
-                "bond_atoms": None,
-                "applied": None,
-                "r0_angstrom": None,
-                "r_shifted_angstrom": None
-            },
-            "energies": {
-                "global_lda": None,
-                "global_low": None,
-                "global_high": None,
-                "embed_high_in_low": None
-            },
             "error": None,
             "trace": None
         }
@@ -185,7 +161,7 @@ def build_mol(config, coords=None):
     mol.basis = config.get("basis_set", "def2-svp")
     mol.charge = int(config.get("charge", 0))
     mol.spin = int(config.get("spin", 0))
-    mol.verbose = int(config.get("verbose", 0))
+    mol.verbose = int(config.get("verbose", 4))
     mol.build()
     return mol
 
@@ -226,37 +202,20 @@ def run_energy_block(config, mol=None):
     # --- 2a. High-in-Low embedding (Low guess) ------------------------
     mf_outer_hl_low = OneStepRKS(mol, eval_low_guess, xc=xc_low)
     mf_inner_hl_low = _make_rks(mol, xc_high)
-    emb_hl_low = SingleFragmentEmbedding_ML(mf_outer_hl_low, mf_inner_hl_low, fragment)
+    emb_hl_low = SingleFragmentEmbedding_ML(mf_outer_hl_low, mf_inner_hl_low, fragment, verbose=4)
     e_embed_high_in_low_low_guess = float(emb_hl_low.kernel())
 
     # --- 2b. High-in-Low embedding (LDA guess) ------------------------
     mf_outer_hl_lda = OneStepRKS(mol, eval_lda_guess, xc=xc_low)
     mf_inner_hl_lda = _make_rks(mol, xc_high)
-    emb_hl_lda = SingleFragmentEmbedding_ML(mf_outer_hl_lda, mf_inner_hl_lda, fragment)
+    emb_hl_lda = SingleFragmentEmbedding_ML(mf_outer_hl_lda, mf_inner_hl_lda, fragment, verbose=4)
     e_embed_high_in_low_lda_guess = float(emb_hl_lda.kernel())
-
-    # --- 2c. Low-in-Low embedding (Low guess) --------------------------
-    mf_outer_ll_low = OneStepRKS(mol, eval_low_guess, xc=xc_low)
-    mf_inner_ll_low = _make_rks(mol, xc_low)
-    emb_ll_low = SingleFragmentEmbedding_ML(mf_outer_ll_low, mf_inner_ll_low, fragment)
-    e_embed_low_in_low_low_guess = float(emb_ll_low.kernel())
-
-    # --- 2d. Low-in-Low embedding (LDA guess) --------------------------
-    mf_outer_ll_lda = OneStepRKS(mol, eval_lda_guess, xc=xc_low)
-    mf_inner_ll_lda = _make_rks(mol, xc_low)
-    emb_ll_lda = SingleFragmentEmbedding_ML(mf_outer_ll_lda, mf_inner_ll_lda, fragment)
-    e_embed_low_in_low_lda_guess = float(emb_ll_lda.kernel())
 
     # Try shifted reference energy (may fail with CAS-DFT due to missing ONIOM correction attributes)
     try:
         shift_hl = ea.shifted_reference_energy(mf_outer_hl_low, mf_inner_hl_low, emb_hl_low)
     except Exception:
         shift_hl = {"e_ref_shifted": None, "delta_xc_shift": None}
-        
-    try:
-        shift_ll = ea.shifted_reference_energy(mf_outer_ll_low, mf_inner_ll_low, emb_ll_low)
-    except Exception:
-        shift_ll = {"e_ref_shifted": None, "delta_xc_shift": None}
 
     results = {
         "functionals": {"lda": xc_lda, "low": xc_low, "high": xc_high},
@@ -269,18 +228,12 @@ def run_energy_block(config, mol=None):
             "global_high": e_global_high,
             "embed_high_in_low_low_guess": e_embed_high_in_low_low_guess,
             "embed_high_in_low_lda_guess": e_embed_high_in_low_lda_guess,
-            "embed_low_in_low_low_guess": e_embed_low_in_low_low_guess,
-            "embed_low_in_low_lda_guess": e_embed_low_in_low_lda_guess,
             "shifted_reference_high_in_low": shift_hl["e_ref_shifted"],
-            "shifted_reference_low_in_low": shift_ll["e_ref_shifted"],
             "delta_xc_shift_high_in_low": shift_hl["delta_xc_shift"],
-            "delta_xc_shift_low_in_low": shift_ll["delta_xc_shift"],
         },
         "derived": {
             "embed_minus_global_high_low_guess": e_embed_high_in_low_low_guess - e_global_high,
             "embed_minus_global_high_lda_guess": e_embed_high_in_low_lda_guess - e_global_high,
-            "low_in_low_error_low_guess": e_embed_low_in_low_low_guess - e_global_low,
-            "low_in_low_error_lda_guess": e_embed_low_in_low_lda_guess - e_global_low,
         },
     }
     
@@ -291,78 +244,8 @@ def run_energy_block(config, mol=None):
         "emb_high_in_low": emb_hl_low, 
         "mf_outer_hl": mf_outer_hl_low,
         "mf_inner_hl": mf_inner_hl_low,
-        "emb_low_in_low": emb_ll_low,
     }
     return results, live
-
-# ---------------------------------------------------------------------------
-# Single-point bond test (Task 2.3)
-# ---------------------------------------------------------------------------
-def resolve_bond_geometry(config):
-    """Build the single geometry on which the bond test is evaluated."""
-    base_coords = np.asarray(config["structure"], dtype=float)
-    shift_flag = bool(config.get("bond_shift_flag", False))
-    scale = float(config.get("bond_shift_scale", 1.0))
-    bond_test_id = [int(a) for a in config.get("bond_test_id", [])]
-
-    info = {
-        "bond_shift_flag": shift_flag,
-        "bond_shift_scale": scale,
-        "bond_atoms": None,
-        "applied": False,
-        "r0_angstrom": None,
-        "r_shifted_angstrom": None,
-    }
-
-    if not shift_flag or len(bond_test_id) < 2:
-        return base_coords, info
-
-    ia, ja = bond_test_id[0], bond_test_id[1]
-    r0 = float(np.linalg.norm(base_coords[ja] - base_coords[ia]))
-    coords = ea.scale_bond(base_coords, ia, ja, scale)
-    info.update({
-        "bond_atoms": [ia, ja],
-        "applied": True,
-        "r0_angstrom": r0,
-        "r_shifted_angstrom": float(r0 * scale),
-    })
-    return coords, info
-
-def run_bond_block(config):
-    """Single-point bond test driven by the JSON ``bond_shift_*`` annotations."""
-    coords, info = resolve_bond_geometry(config)
-    fragment = [int(a) for a in config["fragment_id"]]
-
-    energies = {
-        "global_lda": _safe_global_energy(config, coords, config.get("xc_lda", "lda,vwn")),
-        "global_low": _safe_global_energy(config, coords, config.get("xc_low", "pbe")),
-        "global_high": _safe_global_energy(config, coords, config.get("xc_high", "b3lyp")),
-        "embed_high_in_low": _safe_embed_energy(config, coords, fragment),
-    }
-    return {"shift": info, "energies": energies}
-
-def _safe_global_energy(config, coords, xc):
-    try:
-        mol = build_mol(config, coords=coords)
-        mf = _make_rks(mol, xc)
-        return float(mf.kernel())
-    except Exception:
-        return float("nan")
-
-def _safe_embed_energy(config, coords, fragment):
-    try:
-        _, _, SingleFragmentEmbedding_ML, OneStepRKS = _import_gpu_stack()
-        mol = build_mol(config, coords=coords)
-        
-        # Use low xc guess by default for the bond stretch ML embedding
-        eval_low = make_dummy_eval_density_func(config.get("xc_low", "pbe"))
-        mf_outer = OneStepRKS(mol, eval_low, xc=config.get("xc_low", "pbe"))
-        mf_inner = _make_rks(mol, config.get("xc_high", "b3lyp"))
-        
-        emb = SingleFragmentEmbedding_ML(mf_outer, mf_inner, fragment)
-        return float(emb.kernel())
-    except Exception:
-        return float("nan")
 
 # ---------------------------------------------------------------------------
 # Local orbital energies (Task 2.4)
@@ -464,6 +347,7 @@ def process_single(config, name, outdir="results"):
     if config.get("tda_flag", True):
         try:
             tda_res = run_tda_block(live)
+            del tda_res["eigenvectors"]
             blocks["tda"].update(tda_res)
         except Exception as exc:
             blocks["tda"]["error"] = str(exc)
@@ -477,15 +361,6 @@ def process_single(config, name, outdir="results"):
         except Exception as exc:
             blocks["population"]["error"] = str(exc)
             blocks["population"]["trace"] = traceback.format_exc()
-
-    # Single-point bond test
-    if config.get("bond_shift_flag", False) or config.get("bond_test_id"):
-        try:
-            bond_res = run_bond_block(config)
-            blocks["bond"].update(bond_res)
-        except Exception as exc:
-            blocks["bond"]["error"] = str(exc)
-            blocks["bond"]["trace"] = traceback.format_exc()
 
     return blocks, "ok"
 

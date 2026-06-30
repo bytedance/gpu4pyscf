@@ -396,7 +396,7 @@ def embedded_tda(emb, mf_outer, ifrag=0, singlet=True, nstates=5):
     return {
         "excitation_energies_au": energies,
         "excitation_energies_ev": [e * HARTREE2EV for e in energies],
-        "eigenvectors": res["eigenvectors"],
+        "eigenvectors": res["eigenvectors"].tolist(),
         "nocc": res["nocc"],
         "nvir": res["nvir"],
     }
