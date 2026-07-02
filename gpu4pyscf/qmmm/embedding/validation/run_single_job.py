@@ -123,6 +123,9 @@ def get_default_results():
         },
         "tda": {
             "excitation_energies_ev": None,
+            "excitation_energies_ev_ref_high": None, # Added for Global High reference
+            "excitation_energies_ev_ref_low": None,  # Added for Global Low reference
+            "excitation_energies_ev_ref_lda": None,  # Added for Global LDA reference
             # "eigenvectors": None,
             "oscillator_strengths": None,
             "nocc": None,
@@ -271,10 +274,39 @@ def run_orbital_block(live):
 # Local excited states (Task 2.5)
 # ---------------------------------------------------------------------------
 def run_tda_block(live, nstates=5):
-    """Local TDA excitation energies from explicit A-matrix diagonalisation."""
+    """Local TDA excitation energies from explicit A-matrix diagonalisation and global references."""
+    from gpu4pyscf import tdscf
+    from pyscf.data.nist import HARTREE2EV
+
     emb = live["emb_high_in_low"]
     mf_outer = live["mf_outer_hl"]
-    return ea.embedded_tda(emb, mf_outer, ifrag=0, singlet=True, nstates=nstates)
+    
+    # 1. Embedded TDA
+    res = ea.embedded_tda(emb, mf_outer, ifrag=0, singlet=True, nstates=nstates)
+
+    # 2. Reference TDA - Global High
+    td_high = live["mf_high"].TDA()
+    td_high.nstates = nstates
+    td_high.kernel()
+    if td_high.e is not None:
+        # Cast to float directly handles both numpy and cupy array types gracefully for JSON
+        res["excitation_energies_ev_ref_high"] = [float(e * HARTREE2EV) for e in td_high.e]
+        
+    # 3. Reference TDA - Global Low
+    td_low = live["mf_low"].TDA()
+    td_low.nstates = nstates
+    td_low.kernel()
+    if td_low.e is not None:
+        res["excitation_energies_ev_ref_low"] = [float(e * HARTREE2EV) for e in td_low.e]
+        
+    # 4. Reference TDA - Global LDA
+    td_lda = live["mf_lda"].TDA()
+    td_lda.nstates = nstates
+    td_lda.kernel()
+    if td_lda.e is not None:
+        res["excitation_energies_ev_ref_lda"] = [float(e * HARTREE2EV) for e in td_lda.e]
+
+    return res
 
 # ---------------------------------------------------------------------------
 # Population & density analysis (Task 2.6)
