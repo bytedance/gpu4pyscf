@@ -167,10 +167,16 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
         self.log.info("Running high-level inner DFT in embedding space...")
         mf_inner = self._build_inner_mf(ifrag, dm_full_ao_low)
         
-        # Patch for gpu4pyscf inner MF losing _numint (Replaced previous flawed logic)
+        # Patch for gpu4pyscf inner MF losing _numint
         if getattr(mf_inner, '_numint', None) is None:
-            from gpu4pyscf.dft import numint
-            mf_inner._numint = numint.NumInt()
+            import copy
+            if hasattr(self, 'mf_inner_template') and getattr(self.mf_inner_template, '_numint', None) is not None:
+                mf_inner._numint = copy.copy(self.mf_inner_template._numint)
+            elif getattr(self.mf_outer, '_numint', None) is not None:
+                mf_inner._numint = copy.copy(self.mf_outer._numint)
+            else:
+                from gpu4pyscf.dft import numint
+                mf_inner._numint = numint.NumInt()
             
         # Ensure it's correctly assigned back to the list so solve_embedded uses the patched object
         self.mf_inner[ifrag] = mf_inner

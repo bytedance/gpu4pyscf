@@ -372,10 +372,9 @@ def build_tda_amatrix(mf_outer, mf_inner, mo_coeff_ao, mo_energy, mo_occ, single
 
     A_mat = a.reshape(nocc * nvir, nocc * nvir)
     A_mat = 0.5 * (A_mat + A_mat.T)
-    A_mat = to_numpy(A_mat)
 
-    w, v = np.linalg.eigh(A_mat)
-    return {"excitation_energies": [float(x) for x in np.sort(w)],
+    w, v = cp.linalg.eigh(A_mat)
+    return {"excitation_energies": [float(x) for x in cp.sort(w)],
             "eigenvectors": v,
             "a_matrix": A_mat, "nocc": int(nocc), "nvir": int(nvir)}
 
