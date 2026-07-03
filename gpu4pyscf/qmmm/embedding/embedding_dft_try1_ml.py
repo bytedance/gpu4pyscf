@@ -80,7 +80,7 @@ class OneStepRKS(rks.RKS):
         # For standard embedding steps, fallback to the native exact DFT evaluation.
         if getattr(self, '_use_harris_veff', False):
             return self._get_harris_veff(mol)
-        return rks.RKS.get_veff(self, mol, dm, dm_last, vhf_last, hermi)
+        return super().get_veff(mol, dm, dm_last, vhf_last, hermi)
 
     def kernel(self, dm0=None, **kwargs):
         if self.max_cycle != 1:
@@ -90,10 +90,17 @@ class OneStepRKS(rks.RKS):
 
         # Temporarily enable Harris ML potential for the global 1-step evaluation
         self._use_harris_veff = True
+        
+        # Instance-level override: forcefully bypass DensityFitMixin's get_veff 
+        # so it strictly hits our ML evaluator during the global step
+        self.get_veff = lambda mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1: self._get_harris_veff(mol)
+        
         try:
-            e_tot = rks.RKS.kernel(self, dm0=dm0, **kwargs)
+            e_tot = super().kernel(dm0=dm0, **kwargs)
         finally:
             self._use_harris_veff = False
+            if 'get_veff' in self.__dict__:
+                del self.__dict__['get_veff']
             
         self.converged = True
         return e_tot
@@ -114,10 +121,14 @@ class OneStepRKS(rks.RKS):
             fock = h1e_cp + vhf_cp
             e_band = float(cp.sum(dm_cp * fock))
             
+            # Fallback to ensure _e_dc_global is safely initialized
+            if self._e_dc_global is None:
+                self._get_harris_veff(self.mol)
+                
             e_elec = e_band - self._e_dc_global
             return e_elec, self._e_dc_global
         else:
-            return rks.RKS.energy_elec(self, dm, h1e, vhf)
+            return super().energy_elec(dm, h1e, vhf)
 
 
 class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
@@ -129,18 +140,6 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
     handling non-linear DFT exchange-correlation components.
     """
     def __init__(self, mf_outer, mf_inner, fragment, threshold=1e-5, verbose=None):
-        """
-        Parameters
-        ----------
-        mf_outer : OneStepRKS object
-            The global low-level solver driven by ML density.
-        mf_inner : rks.RKS object
-            The high-level DFT solver applied to the embedded fragment+bath cluster.
-        fragment : list of int
-            List of atom indices defining the core QM region.
-        threshold : float
-            Eigenvalue cutoff for the Schmidt decomposition to classify bath orbitals.
-        """
         super().__init__(mf_outer, mf_inner, fragment,
                          threshold=threshold, verbose=verbose)
         self.fragment = self.fragments[0]
@@ -167,6 +166,14 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
         
         self.log.info("Running high-level inner DFT in embedding space...")
         mf_inner = self._build_inner_mf(ifrag, dm_full_ao_low)
+        
+        # Patch for gpu4pyscf inner MF losing _numint (Replaced previous flawed logic)
+        if getattr(mf_inner, '_numint', None) is None:
+            from gpu4pyscf.dft import numint
+            mf_inner._numint = numint.NumInt()
+            
+        # Ensure it's correctly assigned back to the list so solve_embedded uses the patched object
+        self.mf_inner[ifrag] = mf_inner
         
         B_mat = self.B[ifrag]
         dm_core_mat = self.dm_core[ifrag]

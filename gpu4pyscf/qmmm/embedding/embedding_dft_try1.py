@@ -103,6 +103,14 @@ class SingleFragmentEmbedding(DMET):
         
         # Build and Run Inner embedded solver
         mf_inner = self._build_inner_mf(ifrag, dm_full_ao_low)
+
+        # Patch for gpu4pyscf inner MF losing _numint (Replaced previous flawed logic)
+        if getattr(mf_inner, '_numint', None) is None:
+            from gpu4pyscf.dft import numint
+            mf_inner._numint = numint.NumInt()
+            
+        # Ensure it's correctly assigned back to the list so solve_embedded uses the patched object
+        self.mf_inner[ifrag] = mf_inner
         
         B_mat = self.B[ifrag]
         dm_core_mat = self.dm_core[ifrag]

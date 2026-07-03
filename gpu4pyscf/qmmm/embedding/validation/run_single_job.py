@@ -114,30 +114,43 @@ def get_default_results():
             "trace": None
         },
         "orbitals": {
-            "embedding": None,
+            "embedding_low_guess": None,
+            "embedding_lda_guess": None,
             "reference_global_high": None,
-            "homo_shift": None,
-            "lumo_shift": None,
+            "reference_global_low": None, # Added missing PBE reference
+            "reference_global_lda": None, # Added missing LDA reference
+            "homo_shift_low_guess": None,
+            "lumo_shift_low_guess": None,
+            "homo_shift_lda_guess": None,
+            "lumo_shift_lda_guess": None,
             "error": None,
             "trace": None
         },
         "tda": {
-            "excitation_energies_ev": None,
-            "excitation_energies_ev_ref_high": None, # Added for Global High reference
-            "excitation_energies_ev_ref_low": None,  # Added for Global Low reference
-            "excitation_energies_ev_ref_lda": None,  # Added for Global LDA reference
-            # "eigenvectors": None,
-            "oscillator_strengths": None,
-            "nocc": None,
-            "nvir": None,
+            "excitation_energies_ev_low_guess": None,
+            "excitation_energies_ev_lda_guess": None,
+            "excitation_energies_ev_ref_high": None, 
+            "excitation_energies_ev_ref_low": None,  
+            "excitation_energies_ev_ref_lda": None,  
+            "oscillator_strengths_low_guess": None,
+            "oscillator_strengths_lda_guess": None,
+            "nocc_low_guess": None,
+            "nvir_low_guess": None,
+            "nocc_lda_guess": None,
+            "nvir_lda_guess": None,
             "error": None,
             "trace": None
         },
         "population": {
-            "mulliken_embedding": None,
+            "mulliken_embedding_low_guess": None,
+            "mulliken_embedding_lda_guess": None,
             "mulliken_global_high": None,
-            "mulliken_diff": None,
-            "cube_file": None,
+            "mulliken_global_low": None,
+            "mulliken_global_lda": None, # Added missing LDA reference
+            "mulliken_diff_low_guess": None,
+            "mulliken_diff_lda_guess": None,
+            "cube_file_low_guess": None,
+            "cube_file_lda_guess": None,
             "error": None,
             "trace": None
         }
@@ -240,13 +253,16 @@ def run_energy_block(config, mol=None):
         },
     }
     
-    # We pass the Low-guess High-in-Low instance to 'live' for downstream Orbital/TDA blocks
+    # Passing both Low-guess and LDA-guess to 'live' for downstream blocks
     live = {
         "mol": mol,
         "mf_lda": mf_lda, "mf_low": mf_low, "mf_high": mf_high,
         "emb_high_in_low": emb_hl_low, 
+        "emb_high_in_low_lda": emb_hl_lda,
         "mf_outer_hl": mf_outer_hl_low,
+        "mf_outer_hl_lda": mf_outer_hl_lda,
         "mf_inner_hl": mf_inner_hl_low,
+        "mf_inner_hl_lda": mf_inner_hl_lda,
     }
     return results, live
 
@@ -254,20 +270,35 @@ def run_energy_block(config, mol=None):
 # Local orbital energies (Task 2.4)
 # ---------------------------------------------------------------------------
 def run_orbital_block(live):
-    """Core-region HOMO / LUMO from the embedding solver vs the global reference."""
-    emb = live["emb_high_in_low"]
-    mf_inner = emb.mf_inner[0]
-    embed_hl = ea.core_homo_lumo(mf_inner)
+    """Core-region HOMO / LUMO from both embedding solvers vs the global references."""
+    # 1. Embedded Orbitals - Low Guess
+    emb_low = live["emb_high_in_low"]
+    embed_hl_low = ea.core_homo_lumo(emb_low.mf_inner[0])
+    
+    # 2. Embedded Orbitals - LDA Guess
+    emb_lda = live["emb_high_in_low_lda"]
+    embed_hl_lda = ea.core_homo_lumo(emb_lda.mf_inner[0])
 
-    ref_hl = ea.core_homo_lumo(live["mf_high"])
+    # 3. Reference Orbitals
+    ref_high = ea.core_homo_lumo(live["mf_high"])
+    ref_low = ea.core_homo_lumo(live["mf_low"])
+    ref_lda = ea.core_homo_lumo(live["mf_lda"])
 
     return {
-        "embedding": embed_hl,
-        "reference_global_high": ref_hl,
-        "homo_shift": (None if embed_hl["homo"] is None or ref_hl["homo"] is None
-                       else embed_hl["homo"] - ref_hl["homo"]),
-        "lumo_shift": (None if embed_hl["lumo"] is None or ref_hl["lumo"] is None
-                       else embed_hl["lumo"] - ref_hl["lumo"]),
+        "embedding_low_guess": embed_hl_low,
+        "embedding_lda_guess": embed_hl_lda,
+        "reference_global_high": ref_high,
+        "reference_global_low": ref_low,
+        "reference_global_lda": ref_lda,
+        # Note: Shifts remain calculated explicitly vs global_high target as default tracking
+        "homo_shift_low_guess": (None if embed_hl_low["homo"] is None or ref_high["homo"] is None
+                                 else embed_hl_low["homo"] - ref_high["homo"]),
+        "lumo_shift_low_guess": (None if embed_hl_low["lumo"] is None or ref_high["lumo"] is None
+                                 else embed_hl_low["lumo"] - ref_high["lumo"]),
+        "homo_shift_lda_guess": (None if embed_hl_lda["homo"] is None or ref_high["homo"] is None
+                                 else embed_hl_lda["homo"] - ref_high["homo"]),
+        "lumo_shift_lda_guess": (None if embed_hl_lda["lumo"] is None or ref_high["lumo"] is None
+                                 else embed_hl_lda["lumo"] - ref_high["lumo"]),
     }
 
 # ---------------------------------------------------------------------------
@@ -278,18 +309,34 @@ def run_tda_block(live, nstates=5):
     from gpu4pyscf import tdscf
     from pyscf.data.nist import HARTREE2EV
 
-    emb = live["emb_high_in_low"]
-    mf_outer = live["mf_outer_hl"]
-    
-    # 1. Embedded TDA
-    res = ea.embedded_tda(emb, mf_outer, ifrag=0, singlet=True, nstates=nstates)
+    # 1a. Embedded TDA - Low Guess
+    emb_low = live["emb_high_in_low"]
+    mf_outer_low = live["mf_outer_hl"]
+    res_low = ea.embedded_tda(emb_low, mf_outer_low, ifrag=0, singlet=True, nstates=nstates)
+
+    # 1b. Embedded TDA - LDA Guess
+    emb_lda = live["emb_high_in_low_lda"]
+    mf_outer_lda = live["mf_outer_hl_lda"]
+    res_lda = ea.embedded_tda(emb_lda, mf_outer_lda, ifrag=0, singlet=True, nstates=nstates)
+
+    # Re-structure for uniform keys (removes eigenvectors implicitly)
+    res = {
+        "excitation_energies_ev_low_guess": res_low.get("excitation_energies_ev"),
+        "oscillator_strengths_low_guess": res_low.get("oscillator_strengths"),
+        "nocc_low_guess": res_low.get("nocc"),
+        "nvir_low_guess": res_low.get("nvir"),
+        
+        "excitation_energies_ev_lda_guess": res_lda.get("excitation_energies_ev"),
+        "oscillator_strengths_lda_guess": res_lda.get("oscillator_strengths"),
+        "nocc_lda_guess": res_lda.get("nocc"),
+        "nvir_lda_guess": res_lda.get("nvir"),
+    }
 
     # 2. Reference TDA - Global High
     td_high = live["mf_high"].TDA()
     td_high.nstates = nstates
     td_high.kernel()
     if td_high.e is not None:
-        # Cast to float directly handles both numpy and cupy array types gracefully for JSON
         res["excitation_energies_ev_ref_high"] = [float(e * HARTREE2EV) for e in td_high.e]
         
     # 3. Reference TDA - Global Low
@@ -312,37 +359,61 @@ def run_tda_block(live, nstates=5):
 # Population & density analysis (Task 2.6)
 # ---------------------------------------------------------------------------
 def run_population_block(config, live, outdir, name):
-    """Mulliken charges (on the fragment atoms) + density-difference cube."""
+    """Mulliken charges (on the fragment atoms) + density-difference cubes for both guesses."""
     mol = live["mol"]
-    emb = live["emb_high_in_low"]
+    emb_low = live["emb_high_in_low"]
+    emb_lda = live["emb_high_in_low_lda"]
     mf_high = live["mf_high"]
+    mf_low = live["mf_low"]
+    mf_lda = live["mf_lda"]
 
     s_ao = mf_high.get_ovlp()
     nao = int(mol.nao_nr())
 
-    dm_embed_ao = ea.full_ao_embedding_density(emb, ifrag=0)
-    ea.assert_full_ao(dm_embed_ao, nao, "embedding density")
-
+    # Densities
+    dm_embed_ao_low = ea.full_ao_embedding_density(emb_low, ifrag=0)
+    dm_embed_ao_lda = ea.full_ao_embedding_density(emb_lda, ifrag=0)
     dm_global_high_ao = mf_high.make_rdm1()
+    dm_global_low_ao = mf_low.make_rdm1()
+    dm_global_lda_ao = mf_lda.make_rdm1()
+    
+    ea.assert_full_ao(dm_embed_ao_low, nao, "embedding density low guess")
     ea.assert_full_ao(dm_global_high_ao, nao, "global-high density")
 
     frag_atoms = [int(a) for a in config["fragment_id"]]
-    charges_embed = ea.mulliken_charges(mol, dm_embed_ao, s_ao, atom_ids=frag_atoms)
+    
+    # Charges
+    charges_embed_low = ea.mulliken_charges(mol, dm_embed_ao_low, s_ao, atom_ids=frag_atoms)
+    charges_embed_lda = ea.mulliken_charges(mol, dm_embed_ao_lda, s_ao, atom_ids=frag_atoms)
     charges_high = ea.mulliken_charges(mol, dm_global_high_ao, s_ao, atom_ids=frag_atoms)
+    charges_low = ea.mulliken_charges(mol, dm_global_low_ao, s_ao, atom_ids=frag_atoms)
+    charges_lda = ea.mulliken_charges(mol, dm_global_lda_ao, s_ao, atom_ids=frag_atoms)
 
-    cube_path = os.path.join(outdir, f"density_diff_{name}.cube")
+    # Cube files
+    cube_path_low = os.path.join(outdir, f"density_diff_low_guess_{name}.cube")
     try:
-        ea.density_difference_cube(mol, dm_embed_ao, dm_global_high_ao, cube_path)
-        cube_written = cube_path
+        ea.density_difference_cube(mol, dm_embed_ao_low, dm_global_high_ao, cube_path_low)
+        cube_written_low = cube_path_low
     except Exception as exc:
-        cube_written = f"cube failed: {exc}"
+        cube_written_low = f"cube failed: {exc}"
+
+    cube_path_lda = os.path.join(outdir, f"density_diff_lda_guess_{name}.cube")
+    try:
+        ea.density_difference_cube(mol, dm_embed_ao_lda, dm_global_high_ao, cube_path_lda)
+        cube_written_lda = cube_path_lda
+    except Exception as exc:
+        cube_written_lda = f"cube failed: {exc}"
 
     return {
-        "mulliken_embedding": {str(k): v for k, v in charges_embed.items()},
+        "mulliken_embedding_low_guess": {str(k): v for k, v in charges_embed_low.items()},
+        "mulliken_embedding_lda_guess": {str(k): v for k, v in charges_embed_lda.items()},
         "mulliken_global_high": {str(k): v for k, v in charges_high.items()},
-        "mulliken_diff": {str(k): charges_embed[k] - charges_high[k]
-                          for k in charges_embed},
-        "cube_file": cube_written,
+        "mulliken_global_low": {str(k): v for k, v in charges_low.items()},
+        "mulliken_global_lda": {str(k): v for k, v in charges_lda.items()},
+        "mulliken_diff_low_guess": {str(k): charges_embed_low[k] - charges_high[k] for k in charges_embed_low},
+        "mulliken_diff_lda_guess": {str(k): charges_embed_lda[k] - charges_high[k] for k in charges_embed_lda},
+        "cube_file_low_guess": cube_written_low,
+        "cube_file_lda_guess": cube_written_lda,
     }
 
 # ---------------------------------------------------------------------------
@@ -379,7 +450,8 @@ def process_single(config, name, outdir="results"):
     if config.get("tda_flag", True):
         try:
             tda_res = run_tda_block(live)
-            del tda_res["eigenvectors"]
+            # Remove del eigenvectors line here, managed cleanly in run_tda_block now
+            tda_res.pop("eigenvectors", None) 
             blocks["tda"].update(tda_res)
         except Exception as exc:
             blocks["tda"]["error"] = str(exc)
