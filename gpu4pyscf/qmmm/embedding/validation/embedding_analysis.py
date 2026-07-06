@@ -14,6 +14,8 @@
 
 import numpy as np
 import cupy as cp
+from gpu4pyscf.tdscf._lr_eig import eigh as lr_eigh
+from gpu4pyscf.lib import logger
 
 
 def to_numpy(x):
@@ -400,6 +402,208 @@ def embedded_tda(emb, mf_outer, ifrag=0, singlet=True, nstates=5):
         "nvir": res["nvir"],
     }
 
+
+def embedded_tda_davidson(emb, mf_outer, ifrag=0, singlet=True, nstates=5):
+    """
+    Compute local TDA excitation energies using the Davidson algorithm.
+    This avoids the O(N^4) memory bottleneck of explicitly assembling the A matrix 
+    by computing the matrix-vector product directly on the DFT grids.
+    """
+    mf_inner = emb.mf_inner[ifrag]
+    B = emb.B[ifrag]
+    mo_coeff_ao = project_mo_emb_to_ao(mf_inner.mo_coeff, B)
+    
+    nao = int(mf_outer.mol.nao_nr())
+    mo_coeff_ao = as_backend(mo_coeff_ao, cp.zeros(1))
+    
+    mo_energy = mf_inner.mo_energy
+    mo_occ = mf_inner.mo_occ
+    mo_energy_h = to_numpy(mo_energy).ravel()
+    mo_occ_h = to_numpy(mo_occ).ravel()
+    occ_idx = np.where(mo_occ_h > 1e-8)[0]
+    vir_idx = np.where(mo_occ_h <= 1e-8)[0]
+    nocc, nvir = occ_idx.size, vir_idx.size
+    
+    if nocc == 0 or nvir == 0:
+        return {"excitation_energies_au": [], "excitation_energies_ev": [], 
+                "eigenvectors": [], "nocc": int(nocc), "nvir": int(nvir), "converged": False}
+
+    C_occ = mo_coeff_ao[:, occ_idx]
+    C_vir = mo_coeff_ao[:, vir_idx]
+
+    e_ia = cp.asarray(mo_energy_h[vir_idx] - mo_energy_h[occ_idx, None])
+    hdiag = e_ia.ravel()
+
+    mol = mf_outer.mol
+    from gpu4pyscf import scf
+
+    # Functional and grid setup (kept identical to explicit version)
+    is_dft = isinstance(mf_inner, scf.hf.KohnShamDFT)
+    if is_dft:
+        grids = mf_outer.grids
+        ni = mf_inner._numint
+        xc = mf_inner.xc
+        omega, alpha, hyb = ni.rsh_and_hybrid_coeff(xc, mol.spin)
+
+        if omega != 0:
+            raise NotImplementedError('RSH functional is not fully implemented in this block.')
+
+        xctype = ni._xc_type(xc)
+        opt = getattr(ni, 'gdftopt', None)
+        if opt is None:
+            ni.build(mol, grids.coords)
+            opt = ni.gdftopt
+        _sorted_mol = opt._sorted_mol
+
+        mo_coeff_global = cp.asarray(mo_coeff_ao)
+        mo_occ_global = cp.asarray(mo_occ)
+        
+        mo_coeff_global_sort = opt.sort_orbitals(mo_coeff_global, axis=[0])
+        C_occ_sort = opt.sort_orbitals(C_occ, axis=[0])
+        C_vir_sort = opt.sort_orbitals(C_vir, axis=[0])
+    else:
+        hyb = 1.0
+
+    def vind(zs):
+        """Matrix-vector product generator for Davidson algorithm."""
+        # zs comes in shape (N_vec, nocc * nvir)
+        zs = cp.asarray(zs).reshape(-1, nocc, nvir)
+        n_vec = zs.shape[0]
+
+        # 1. Exact exchange / Coulomb components using INNER hyb
+        mo1 = cp.einsum('njb, qb -> nqj', zs, C_vir)
+        dms = cp.einsum('pj, nqj -> npq', C_occ, mo1)
+
+        vj, vk = mf_outer.get_jk(mol, dms, hermi=0)
+        
+        v_resp = cp.zeros_like(vj)
+        if singlet:
+            v_resp += 2.0 * vj
+        if hyb != 0:
+            v_resp -= hyb * vk
+
+        # Project back to MO basis
+        v1mo = cp.einsum('npq, qb -> npb', v_resp, C_vir)
+        v1mo = cp.einsum('pj, npb -> njb', C_occ, v1mo)
+
+        # 2. DFT grid-based exchange-correlation response using INNER xc
+        if is_dft and xctype in ['LDA', 'GGA', 'MGGA']:
+            ao_deriv = 0 if xctype == 'LDA' else 1
+            v1mo_dft = cp.zeros_like(v1mo)
+            
+            for ao, mask, weight, coords in ni.block_loop(_sorted_mol, grids, nao, ao_deriv):
+                rho = ni.eval_rho2(_sorted_mol, ao, mo_coeff_global_sort[mask], mo_occ_global, mask, xctype, with_lapl=False)
+                
+                # Evaluate weights
+                if singlet or singlet is None:
+                    fxc = ni.eval_xc_eff(xc, rho, deriv=2, xctype=xctype)[2]
+                    wfxc = fxc[0,0] * weight if xctype == 'LDA' else fxc * weight
+                else:
+                    fxc = ni.eval_xc_eff(xc, cp.stack((rho, rho))*0.5, deriv=2, xctype=xctype)[2]
+                    if xctype == 'LDA':
+                        wfxc = (fxc[0,0,0,0] - fxc[1,0,0,0]) * 0.5 * weight
+                    else:
+                        wfxc = (fxc[0,:,0,:] - fxc[1,:,0,:]) * 0.5 * weight
+
+                # Compute perturbed densities and contract
+                if xctype == 'LDA':
+                    rho_o = cp.einsum('pr,pi->ri', ao, C_occ_sort[mask])
+                    rho_v = cp.einsum('pr,pi->ri', ao, C_vir_sort[mask])
+                    
+                    z_rho_v = cp.einsum('njb, rb -> nrj', zs, rho_v)
+                    delta_rho = cp.einsum('nrj, rj -> nr', z_rho_v, rho_o)
+                    delta_V = delta_rho * wfxc * 2
+                    
+                    V_rho_o = cp.einsum('nr, ri -> nri', delta_V, rho_o)
+                    v1mo_dft += cp.einsum('nri, ra -> nia', V_rho_o, rho_v)
+                    
+                elif xctype == 'GGA':
+                    rho_o = cp.einsum('xpr,pi->xri', ao, C_occ_sort[mask])
+                    rho_v = cp.einsum('xpr,pi->xri', ao, C_vir_sort[mask])
+                    
+                    z_rho_v0 = cp.einsum('njb, rb -> nrj', zs, rho_v[0])
+                    delta_rho_0 = cp.einsum('nrj, rj -> nr', z_rho_v0, rho_o[0])
+                    
+                    delta_rho_c = cp.zeros((n_vec, 3, delta_rho_0.shape[1]), dtype=ao.dtype)
+                    for c in range(1, 4):
+                        z_rho_vc = cp.einsum('njb, rb -> nrj', zs, rho_v[c])
+                        delta_rho_c[:, c-1, :] = cp.einsum('nrj, rj -> nr', z_rho_v0, rho_o[c]) + cp.einsum('nrj, rj -> nr', z_rho_vc, rho_o[0])
+                        
+                    delta_rho = cp.concatenate([delta_rho_0[:, None, :], delta_rho_c], axis=1)
+                    delta_w = cp.einsum('xyr, nxr -> nyr', wfxc, delta_rho)
+                    
+                    eff_o_0 = cp.einsum('nr, ri -> nri', delta_w[:, 0], rho_o[0]) + cp.einsum('ncr, cri -> nri', delta_w[:, 1:4], rho_o[1:4])
+                    eff_o_c = cp.einsum('ncr, ri -> ncri', delta_w[:, 1:4], rho_o[0])
+                    
+                    v1mo_dft += 2 * (cp.einsum('nri, ra -> nia', eff_o_0, rho_v[0]) + cp.einsum('ncri, cra -> nia', eff_o_c, rho_v[1:4]))
+                    
+                elif xctype == 'MGGA':
+                    rho_o = cp.einsum('xpr,pi->xri', ao, C_occ_sort[mask])
+                    rho_v = cp.einsum('xpr,pi->xri', ao, C_vir_sort[mask])
+                    
+                    z_rho_v0 = cp.einsum('njb, rb -> nrj', zs, rho_v[0])
+                    delta_rho_0 = cp.einsum('nrj, rj -> nr', z_rho_v0, rho_o[0])
+                    
+                    delta_rho_c = cp.zeros((n_vec, 3, delta_rho_0.shape[1]), dtype=ao.dtype)
+                    delta_rho_4 = cp.zeros_like(delta_rho_0)
+                    for c in range(1, 4):
+                        z_rho_vc = cp.einsum('njb, rb -> nrj', zs, rho_v[c])
+                        delta_rho_c[:, c-1, :] = cp.einsum('nrj, rj -> nr', z_rho_v0, rho_o[c]) + cp.einsum('nrj, rj -> nr', z_rho_vc, rho_o[0])
+                        delta_rho_4 += cp.einsum('nrj, rj -> nr', z_rho_vc, rho_o[c]) * 0.5
+                        
+                    delta_rho = cp.concatenate([delta_rho_0[:, None, :], delta_rho_c, delta_rho_4[:, None, :]], axis=1)
+                    delta_w = cp.einsum('xyr, nxr -> nyr', wfxc, delta_rho)
+                    
+                    eff_o_0 = cp.einsum('nr, ri -> nri', delta_w[:, 0], rho_o[0]) + cp.einsum('ncr, cri -> nri', delta_w[:, 1:4], rho_o[1:4])
+                    eff_o_c = cp.einsum('ncr, ri -> ncri', delta_w[:, 1:4], rho_o[0]) + cp.einsum('nr, cri -> ncri', delta_w[:, 4], rho_o[1:4])
+                    
+                    v1mo_dft += 2 * (cp.einsum('nri, ra -> nia', eff_o_0, rho_v[0]) + cp.einsum('ncri, cra -> nia', eff_o_c, rho_v[1:4]))
+
+            v1mo += v1mo_dft
+
+        # 3. Add diagonal orbital energy difference (Zero-th order response)
+        v1mo += zs * e_ia
+        return v1mo.reshape(n_vec, -1)
+
+    # Preconditioner
+    def precond(x, e, *args):
+        n_vec = x.shape[0]
+        diagd = cp.repeat(hdiag.reshape(1, -1), n_vec, axis=0)
+        e = e.reshape(-1, 1)
+        diagd = diagd - e
+        diagd = cp.where(abs(diagd) < 1e-4, cp.sign(diagd)*1e-4, diagd)
+        return x / diagd
+
+    # Initial guess (Koopmans limit: lowest orbital energy gaps)
+    idx = cp.argsort(hdiag)[:nstates]
+    x0 = cp.zeros((nstates, nocc * nvir))
+    for i, idx_i in enumerate(idx):
+        x0[i, int(idx_i)] = 1.0
+
+    def pickeig(w, v, nroots, envs):
+        mask = cp.where(w > 1e-4)[0]
+        return w[mask], v[:, mask], mask
+
+    log = logger.new_logger(mf_outer)
+
+    conv, w, x1 = lr_eigh(
+        vind, x0, precond, tol_residual=1e-5, lindep=1e-12,
+        nroots=nstates, x0sym=None, pick=pickeig, max_cycle=100,
+        verbose=log
+    )
+
+    HARTREE2EV = 27.211386245988
+    energies = [float(val) for val in w[:nstates]]
+
+    return {
+        "excitation_energies_au": energies,
+        "excitation_energies_ev": [val * HARTREE2EV for val in energies],
+        "eigenvectors": [cp.asnumpy(vec).tolist() for vec in x1[:nstates]], # Size: (nstates, nocc * nvir)
+        "nocc": int(nocc),
+        "nvir": int(nvir),
+        "converged": conv
+    }
+    
 
 # ---------------------------------------------------------------------------
 # Population analysis (Mulliken) on the AO-projected density

@@ -282,7 +282,8 @@ def run_tda_block(live, nstates=5):
     # 1. Embedded TDA
     emb = live["emb_high_in_low"]
     mf_outer = live["mf_outer_hl"]
-    res_embed = ea.embedded_tda(emb, mf_outer, ifrag=0, singlet=True, nstates=nstates)
+    # res_embed = ea.embedded_tda(emb, mf_outer, ifrag=0, singlet=True, nstates=nstates)
+    res_embed = ea.embedded_tda_davidson(emb, mf_outer, ifrag=0, singlet=True, nstates=nstates)
 
     res = {
         "excitation_energies_ev": res_embed.get("excitation_energies_ev"),
