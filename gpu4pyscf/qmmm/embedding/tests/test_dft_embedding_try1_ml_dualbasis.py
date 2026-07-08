@@ -99,8 +99,15 @@ CH4_GEOM = '''
 '''
 
 
-class TestDualBasisOneStepRKS(unittest.TestCase):
-    """Standalone dual-basis one-step RKS solver behavior."""
+class TestMLEmbeddingCAS(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mol = build_mol(C2H6_GEOM, '6-31g')
+        cls.mol_small = build_mol(C2H6_GEOM, '6-31g')
+        cls.mol_small_sto = build_mol(C2H6_GEOM, 'sto-3g')
+        cls.methyl_fragment = [0, 2, 3, 4]
+        cls.full_fragment = list(range(cls.mol.natm))
 
     def test_same_basis_exactness(self):
         # When the 'small' basis equals the 'large' basis, the projected
@@ -242,18 +249,6 @@ class TestDualBasisOneStepRKS(unittest.TestCase):
         with self.assertRaises(ValueError):
             mf_db.kernel()
 
-
-class TestDualBasisEmbedding(unittest.TestCase):
-    """Dual-basis accelerated single-fragment DFT-in-DFT embedding."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.mol = build_mol(C2H6_GEOM, '6-31g')
-        cls.mol_small = build_mol(C2H6_GEOM, '6-31g')
-        cls.mol_small_sto = build_mol(C2H6_GEOM, 'sto-3g')
-        cls.methyl_fragment = [0, 2, 3, 4]
-        cls.full_fragment = list(range(cls.mol.natm))
-
     def test_full_system_pbe_in_pbe(self):
         # Full-QM PBE-in-PBE with the same small/large basis must recover the
         # exact global PBE energy (MAE = 0 benchmark).
@@ -317,10 +312,6 @@ class TestDualBasisEmbedding(unittest.TestCase):
             SingleFragmentEmbedding_ML_DualBasis(mf_outer, mf_inner,
                                                  self.methyl_fragment, verbose=0)
 
-
-class TestDualBasisMultiSystem(unittest.TestCase):
-    """Coverage across several molecules and basis combinations."""
-
     def test_same_basis_exact_across_systems(self):
         cases = [
             (H2O_GEOM, '6-31g'),
@@ -363,9 +354,6 @@ class TestDualBasisMultiSystem(unittest.TestCase):
                 self.assertTrue(np.isfinite(e_db))
                 self.assertLess(mf_db._subspace_dim, mf_db._full_dim)
 
-
-class TestDualBasisPerformance(unittest.TestCase):
-    """Performance: the projected diagonalization should be markedly cheaper."""
 
     def test_performance_improvement(self):
         # Use a moderately sized system where N_L >> N_S so the O(N^3)

@@ -12,29 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Dual-basis acceleration for the ML-driven one-step DFT-in-DFT embedding.
-
-The idea is to avoid the O(N_L^3) generalized diagonalization of the *large*
-basis Fock matrix ``F_L C = S_L C E`` by working in a small subspace spanned
-by the molecular orbitals of a *small* basis.
-
-Given a small basis ``S`` (e.g. STO-3G / MINAO, N_S functions) and a large
-target basis ``L`` (e.g. def2-TZVP, N_L functions, N_L >> N_S):
-
-1. Solve the cheap small basis problem      F_S C_S = S_S C_S E_S.
-2. Project the small basis MOs into ``L`` by a least-squares fit that
-   minimizes || |psi_i> - |psi~_i> ||^2, giving
-       V = S_L^{-1} S_LS C_S            (shape N_L x N_S).
-3. Assemble the large basis Fock from the ML density   F_L = h_large + V_eff^ML.
-4. Project into the small subspace       F_sub = V^T F_L V,  S_sub = V^T S_L V.
-5. Diagonalize the tiny subspace problem  F_sub U = S_sub U E_sub.
-6. Reconstruct large basis occupied MOs   C_{L,occ} = V U_occ
-   and the density matrix               D_L = C_{L,occ} C_{L,occ}^T.
-
-Only step 5 involves a diagonalization, and it acts on an N_S x N_S matrix
-instead of an N_L x N_L one, which is the source of the speed-up.
-"""
 
 import numpy as np
 import cupy as cp
@@ -117,8 +94,6 @@ class DualBasisOneStepRKS(OneStepRKS):
         """
         C_S = self._solve_small_basis()
 
-        # Analytic cross-basis and large-basis overlap integrals (built on CPU
-        # via PySCF, then moved to the GPU to stay consistent with the solver).
         s_cross = gto.intor_cross('int1e_ovlp', self.mol, self.mol_small)
         S_LS = _as_cupy(np.asarray(s_cross))
         S_L = _as_cupy(self.get_ovlp())
@@ -131,10 +106,6 @@ class DualBasisOneStepRKS(OneStepRKS):
                 f"which is fewer than the {nocc} occupied orbitals required. "
                 "Use a larger 'small' basis.")
 
-        # Least-squares projection of the small-basis MOs into the large basis:
-        #   minimize || |psi> - |psi~> ||^2  ->  S_L V = S_LS C_S.
-        # Solve the linear system directly for numerical stability instead of
-        # forming an explicit inverse of S_L.
         V = cp.linalg.solve(S_L, S_LS @ C_S)
 
         self._V = V
@@ -143,14 +114,6 @@ class DualBasisOneStepRKS(OneStepRKS):
         return V
 
     def eig(self, h, s, overwrite=False, x=None):
-        """
-        Subspace-projected generalized eigensolver.
-
-        Overrides the O(N_L^3) large-basis diagonalization with a small
-        O(N_S^3) diagonalization in the projected subspace:
-            F_sub = V^T F_L V,   S_sub = V^T S_L V,   F_sub U = S_sub U E_sub.
-        The returned MO coefficients live in the large basis, C_L = V U.
-        """
         if self._V is None:
             self._build_projection()
 

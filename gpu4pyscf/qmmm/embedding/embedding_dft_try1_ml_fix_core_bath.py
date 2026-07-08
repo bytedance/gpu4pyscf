@@ -17,7 +17,8 @@ import cupy as cp
 from pyscf import lib
 from gpu4pyscf.dft import rks
 from gpu4pyscf.lib.cupy_helper import tag_array
-from gpu4pyscf.qmmm.embedding.embedding import DMET, lowdin_orth, _as_cupy
+# Added build_embedding_basis here to support local override
+from gpu4pyscf.qmmm.embedding.embedding import DMET, lowdin_orth, _as_cupy, build_embedding_basis
 from gpu4pyscf.qmmm.embedding.embedding_dft_try1 import SingleFragmentEmbedding
 
 
@@ -139,13 +140,101 @@ class SingleFragmentEmbedding_ML(SingleFragmentEmbedding):
     energies using a CAS-like variational approach without ONIOM correction, explicitly
     handling non-linear DFT exchange-correlation components.
     """
-    def __init__(self, mf_outer, mf_inner, fragment, threshold=1e-5, verbose=None):
+    def __init__(self, mf_outer, mf_inner, fragment, threshold=1e-5, n_bath=None, n_core=None, verbose=None):
         super().__init__(mf_outer, mf_inner, fragment,
                          threshold=threshold, verbose=verbose)
         self.fragment = self.fragments[0]
+        # Added parameters to optionally fix the number of bath or core orbitals
+        self.n_bath = n_bath
+        self.n_core = n_core
+
+    def build_bath(self, ifrag, mo_coeff, mo_occ, X_inv, X):
+        """
+        Override build_bath to allow fixing the number of bath or core orbitals 
+        instead of relying solely on the eigenvalue threshold, preventing PES discontinuities.
+        """
+        if self.n_bath is None and self.n_core is None:
+            # Fallback to default threshold-based behavior
+            return super().build_bath(ifrag, mo_coeff, mo_occ, X_inv, X)
+            
+        # --- Custom logic for explicitly fixed bath/core size ---
+        mo_coeff_oao = X_inv @ _as_cupy(mo_coeff)
+        mo_occ = _as_cupy(mo_occ)
+        env_idx = _as_cupy(self.env_idx[ifrag])
+        frag_idx = _as_cupy(self.frag_idx[ifrag])
+        
+        occ_mask = mo_occ > 1e-8
+        C_occ = mo_coeff_oao[:, occ_mask]
+        
+        if env_idx.size == 0 or C_occ.shape[1] == 0:
+            return super().build_bath(ifrag, mo_coeff, mo_occ, X_inv, X)
+            
+        C_A = C_occ[frag_idx, :]
+        U, S, Vh = cp.linalg.svd(C_A, full_matrices=True)
+        C_rot = C_occ @ Vh.T
+        
+        N_occ = C_occ.shape[1]
+        n_sv = len(S)
+        
+        # Partition columns: least entangled go to core, the rest are bath candidates
+        if self.n_core is not None:
+            n_core_target = min(self.n_core, N_occ)
+            n_bath_cands = N_occ - n_core_target
+        else:
+            n_bath_cands = min(self.n_bath, n_sv)
+            
+        n_bath_cands = max(0, n_bath_cands)
+            
+        raw_bath_orb = C_rot[env_idx, :n_bath_cands]
+        core_orb = C_rot[env_idx, n_bath_cands:]
+        
+        norms = cp.linalg.norm(raw_bath_orb, axis=0)
+        
+        # Drop purely fragment localized orbitals that have ~0 norm in env
+        valid_mask = norms > 1e-10
+        bath_orb = raw_bath_orb[:, valid_mask]
+        valid_norms = norms[valid_mask]
+        bath_orb = bath_orb / valid_norms
+        
+        info = {
+            'n_core_electrons': 2 * core_orb.shape[1],
+            'singular_values': S
+        }
+        
+        nao_oao = X.shape[1]
+        B_oao = build_embedding_basis(nao_oao, self.frag_idx[ifrag], self.env_idx[ifrag], bath_orb)
+        B_ao = X @ B_oao
+
+        if core_orb.size > 0:
+            C_core_oao = cp.zeros((nao_oao, core_orb.shape[1]), dtype=float)
+            C_core_oao[self.env_idx[ifrag], :] = core_orb
+            C_core_ao = X @ C_core_oao
+            dm_core_ao = 2.0 * (C_core_ao @ C_core_ao.T)
+        else:
+            dm_core_ao = cp.zeros((X.shape[0], X.shape[0]), dtype=float)
+
+        self.bath_orb[ifrag] = bath_orb
+        self.core_orb[ifrag] = core_orb
+        self.eig_info[ifrag] = info
+        self.B_oao[ifrag] = B_oao        
+        self.B[ifrag] = B_ao             
+        self.dm_core[ifrag] = dm_core_ao
+
+        n_frag = int(self.frag_idx[ifrag].size)
+        n_bath = int(bath_orb.shape[1] if bath_orb.size else 0)
+        n_core = int(core_orb.shape[1] if core_orb.size else 0)
+
+        self.log.info(f"Fragment {ifrag} Schmidt decomposition singular values (fixed bath/core):")
+        self.log.info(f"    {info['singular_values']}")
+        self.log.info(f"Fragment {ifrag} embedding basis partition:")
+        self.log.info(f"    Number of Fragment AOs : {n_frag}")
+        self.log.info(f"    Number of Bath Orbitals: {n_bath} (Target bath: {self.n_bath})")
+        self.log.info(f"    Number of Core Orbitals: {n_core} (Target core: {self.n_core}) ({info['n_core_electrons']} electrons)")
+        self.log.info(f"    Total Embedded Space   : {n_frag + n_bath} / {nao_oao} (full AO)")
+
+        return self
 
     def kernel(self):
-
         if not self.mf_outer.converged:
             self.mf_outer.kernel()
             
