@@ -19,7 +19,7 @@ import cupy as cp
 from pyscf import gto
 from pyscf import lib
 from gpu4pyscf.lib import logger
-from gpu4pyscf.lib.cupy_helper import tag_array
+from gpu4pyscf.lib.cupy_helper import tag_array, eigh
 import pyscf.ao2mo
 
 
@@ -61,9 +61,9 @@ def _orthogonalize(vecs, S, tol=1e-10):
     M = vecs.T @ S @ vecs
     M = _symmetrize(M)
     try:
-        eigvals, eigvecs = cp.linalg.eigh(M)
+        eigvals, eigvecs = eigh(M)
     except cp.linalg.LinAlgError:
-        eigvals, eigvecs = cp.linalg.eigh(M + 1e-14 * cp.eye(n_vecs))
+        eigvals, eigvecs = eigh(M + 1e-14 * cp.eye(n_vecs))
     keep = eigvals > tol
     if not cp.any(keep):
         n = S.shape[0]
@@ -73,30 +73,16 @@ def _orthogonalize(vecs, S, tol=1e-10):
     return C
 
 
-def density_matrix_decompose(D_ao, S_ao, frag_idx, env_idx, threshold=1e-2):
+def density_matrix_decompose(C_occ, S_ao, frag_idx, env_idx, threshold=1e-2):
     """
-    Decompose the density matrix in non-orthogonal AO basis to select
-    fragment, bath, and core orbitals via diagonalization of the
-    fragment density matrix.
-
-    Instead of performing SVD on the occupied MOs in an orthogonalized
-    (Lowdin OAO) basis, this routine diagonalizes the fragment block of
-    the full density matrix to obtain natural occupation numbers, then
-    partitions eigenvectors by electron-count thresholds into:
-      - core category: small eigenvalues (cumulative electrons <= threshold)
-      - fragment category: large eigenvalues (total close to fragment electrons within threshold)
-      - bath category: remaining eigenvalues (partially entangled)
-
-    Bath orbitals are constructed from density-matrix coupling between
-    fragment natural orbitals and the environment (D_BA @ V_noncore),
-    which is the non-orthogonal AO analog of Schmidt decomposition.
-    Core density is obtained by projecting D onto the subspace S-orthogonal
-    to the embedding basis B, ensuring exact electron conservation.
+    Decompose the density matrix by diagonalizing the fragment population
+    matrix in the occupied MO space. A single diagonalization naturally
+    separates fragment, bath, and core orbitals.
 
     Parameters
     ----------
-    D_ao : (nao, nao) ndarray
-        Full one-particle density matrix in AO basis.
+    C_occ : (nao, nocc) ndarray
+        Occupied molecular orbital coefficients.
     S_ao : (nao, nao) ndarray
         AO overlap matrix.
     frag_idx : (n_frag,) int ndarray
@@ -109,7 +95,7 @@ def density_matrix_decompose(D_ao, S_ao, frag_idx, env_idx, threshold=1e-2):
     Returns
     -------
     frag_orb : (n_frag, n_f) ndarray
-        Fragment natural orbitals in fragment AO basis (columns), V^T S_A V = I.
+        Fragment occupied orbitals in fragment AO basis.
     bath_orb : (n_env, n_b) ndarray
         Bath orbitals in environment AO basis (columns), C_bath^T S_B C_bath = I.
     core_orb : (n_env, n_c) ndarray
@@ -117,118 +103,125 @@ def density_matrix_decompose(D_ao, S_ao, frag_idx, env_idx, threshold=1e-2):
     info : dict
         Metadata including eigenvalues, electron counts, B matrix, dm_core, etc.
     """
-    D_ao = _as_cupy(D_ao)
+    C_occ = _as_cupy(C_occ)
     S_ao = _as_cupy(S_ao)
     frag_idx = _as_cupy(frag_idx)
     env_idx = _as_cupy(env_idx)
 
     n_frag = int(frag_idx.size)
     n_env = int(env_idx.size)
-    nao = D_ao.shape[0]
+    nao = S_ao.shape[0]
 
     if n_frag == 0:
         raise ValueError("Fragment has no AOs.")
 
-    D_A = D_ao[cp.ix_(frag_idx, frag_idx)]
+    # Reconstruct D_ao for later tensor projections
+    D_ao = 2.0 * (C_occ @ C_occ.T)
+
     S_A = S_ao[cp.ix_(frag_idx, frag_idx)]
-    D_A = _symmetrize(D_A)
     S_A = _symmetrize(S_A)
-
-    eigvals, V = cp.linalg.eigh(D_A, S_A)
-    eigvals = cp.clip(eigvals, 0.0, 2.0)
-
+    
+    # Restrict occupied orbitals to the fragment AO space
+    C_A = C_occ[frag_idx, :]
+    
+    # Construct fragment population matrix in the occupied MO space
+    # (D_fragment)_{ij} = C_A^T * S_A * C_A
+    D_fragment = _symmetrize(C_A.T @ S_A @ C_A)
+    
+    # Single generalized eigenvalue decomposition in orthogonal MO space
+    eigvals, t = eigh(D_fragment)
+    print("debug, eigvals:", eigvals)
+    
+    # Sort eigenvalues descending (1.0 -> 0.0)
+    idx_sort = cp.argsort(eigvals)[::-1]
+    eigvals = eigvals[idx_sort]
+    t = t[:, idx_sort]
+    
+    # Rotate occupied orbitals based on the eigenvectors
+    C_bar = C_occ @ t
+    
     n_A = eigvals.size
-    n_frag_electrons_theory = float(cp.sum(eigvals))
+    # Total fragment electrons is 2 * sum(lambda)
+    n_frag_electrons_theory = float(cp.sum(2.0 * eigvals))
 
+    # Core selection (search from smallest eigenvalues)
     core_idx = []
     cum_e_core = 0.0
-    for i in range(n_A):
-        ev = float(eigvals[i])
-        if cum_e_core + ev <= threshold:
+    for i in range(n_A - 1, -1, -1):
+        e_count = 1.0 * float(eigvals[i])
+        if e_count <= threshold:
             core_idx.append(i)
-            cum_e_core += ev
+            cum_e_core += e_count
         else:
             break
-
+            
+    # Fragment selection (search from largest eigenvalues)
     frag_selected_idx = []
     cum_e_frag = 0.0
-    for i in range(n_A - 1, -1, -1):
-        frag_selected_idx.append(i)
-        cum_e_frag += float(eigvals[i])
-        if abs(cum_e_frag - n_frag_electrons_theory) <= threshold:
-            break
-    frag_selected_idx = sorted(frag_selected_idx)
+    for i in range(n_A):
+        e_count = 1.0 * float(eigvals[i])
+        # if e_count >= 1.0 - threshold and e_count <= 1.0 + threshold:
+        if e_count >= 1.0 - threshold:
+            frag_selected_idx.append(i)
+            cum_e_frag += e_count
 
+    frag_selected_idx = sorted(frag_selected_idx)
+    core_idx = sorted(core_idx)
+    
     core_set = set(core_idx)
     frag_set = set(frag_selected_idx)
     bath_idx = sorted(set(range(n_A)) - core_set - frag_set)
 
     n_frag_sel = len(frag_selected_idx)
-    n_core_cat = len(core_idx)
+    n_core = len(core_idx)
+    n_core_electrons = 2 * n_core
 
-    non_core_idx = sorted(frag_selected_idx + bath_idx)
-
-    V_frag = V[:, frag_selected_idx] if frag_selected_idx else cp.zeros((n_frag, 0))
-    V_noncore = V[:, non_core_idx] if non_core_idx else cp.zeros((n_frag, 0))
-
-    D_BA = D_ao[cp.ix_(env_idx, frag_idx)] if n_env > 0 else cp.zeros((0, n_frag))
     S_B = S_ao[cp.ix_(env_idx, env_idx)] if n_env > 0 else cp.zeros((0, 0))
 
+    # Extract and orthogonalize Bath orbitals in environment space
     bath_orb = cp.zeros((n_env, 0))
-    if n_env > 0 and V_noncore.shape[1] > 0:
-        bath_raw = D_BA @ V_noncore
+    if n_env > 0 and len(bath_idx) > 0:
+        bath_raw = C_bar[cp.ix_(env_idx, bath_idx)]
         bath_orb = _orthogonalize(bath_raw, S_B)
     n_bath = bath_orb.shape[1] if bath_orb.size else 0
 
-    n_emb = n_frag_sel + n_bath
+    # Extract and orthogonalize Core orbitals in environment space
+    core_orb = cp.zeros((n_env, 0))
+    if n_env > 0 and n_core > 0:
+        core_raw = C_bar[cp.ix_(env_idx, core_idx)]
+        core_orb = _orthogonalize(core_raw, S_B)
+
+    # Extract Fragment occupied orbitals (for info return matching)
+    V_frag = cp.zeros((n_frag, 0))
+    if n_frag > 0 and n_frag_sel > 0:
+        frag_raw = C_bar[cp.ix_(frag_idx, frag_selected_idx)]
+        V_frag = _orthogonalize(frag_raw, S_A)
+
+    # Build embedding basis B strictly in AO representation
+    n_emb = n_frag + n_bath
     B = cp.zeros((nao, n_emb), dtype=float)
-    if n_frag_sel > 0:
-        B[frag_idx[:, None], cp.arange(n_frag_sel)[None, :]] = V_frag
+    if n_frag > 0:
+        B[cp.ix_(frag_idx, cp.arange(n_frag))] = cp.eye(n_frag)
     if n_bath > 0:
-        B[env_idx[:, None], cp.arange(n_bath)[None, :] + n_frag_sel] = bath_orb
+        B[cp.ix_(env_idx, cp.arange(n_bath) + n_frag)] = bath_orb
 
     if n_emb > 0:
-        M = B.T @ S_ao @ B
-        M = _symmetrize(M)
-        try:
-            ev, evec = cp.linalg.eigh(M)
-        except cp.linalg.LinAlgError:
-            ev, evec = cp.linalg.eigh(M + 1e-14 * cp.eye(n_emb))
-        keep = ev > 1e-10
-        inv_sqrt = 1.0 / cp.sqrt(ev[keep])
-        B = B @ evec[:, keep] * inv_sqrt[None, :]
-    n_emb = B.shape[1]
-
-    if n_emb > 0:
-        S_D_S_B = S_ao @ D_ao @ S_ao @ B
-        dm_emb_full = B.T @ S_D_S_B
+        # Proper tensor projection of density matrix
+        S_emb = _symmetrize(B.T @ S_ao @ B)
+        S_emb_inv = cp.linalg.pinv(S_emb)
+        dm_emb_full = S_emb_inv @ B.T @ S_ao @ D_ao @ S_ao @ B @ S_emb_inv
+        
         dm_core_full = D_ao - B @ dm_emb_full @ B.T
         dm_core_full = _symmetrize(dm_core_full)
     else:
         dm_core_full = D_ao.copy()
         dm_emb_full = cp.zeros((0, 0))
 
-    core_orb = cp.zeros((n_env, 0))
-    n_core = 0
-    n_core_electrons = 0
-    if n_env > 0:
-        dm_core_env = dm_core_full[cp.ix_(env_idx, env_idx)]
-        dm_core_env = _symmetrize(dm_core_env)
-        try:
-            ev_core, evec_core = cp.linalg.eigh(dm_core_env, S_B)
-        except cp.linalg.LinAlgError:
-            ev_core, evec_core = cp.linalg.eigh(dm_core_env + 1e-14 * cp.eye(n_env), S_B)
-        ev_core = cp.clip(ev_core, -0.1, 2.1)
-        core_cut = max(threshold, 1e-6)
-        core_mask = ev_core > (2.0 - core_cut)
-        if cp.any(core_mask):
-            core_orb = _orthogonalize(evec_core[:, core_mask], S_B)
-        n_core = core_orb.shape[1] if core_orb.size else 0
-        n_core_electrons = 2 * n_core
-
+    eigvals_scaled = 2.0 * eigvals
+    
     info = {
         'n_core_electrons': n_core_electrons,
-        'eigenvalues': eigvals,
+        'eigenvalues': eigvals_scaled,
         'n_frag_orbitals': n_frag_sel,
         'n_bath_orbitals': n_bath,
         'n_core_orbitals': n_core,
@@ -239,6 +232,7 @@ def density_matrix_decompose(D_ao, S_ao, frag_idx, env_idx, threshold=1e-2):
         'dm_core': dm_core_full,
         'dm_emb_init': dm_emb_full if n_emb > 0 else cp.zeros((0, 0)),
     }
+    # print("debug, info:", info)
     return V_frag, bath_orb, core_orb, info
 
 
@@ -253,7 +247,6 @@ def build_embedding_basis(nao, frag_idx, env_idx, frag_orb, bath_orb, S_ao):
     """
     frag_idx = _as_cupy(frag_idx)
     env_idx = _as_cupy(env_idx)
-    n_frag = int(frag_idx.size)
     n_bath = bath_orb.shape[1] if bath_orb.size else 0
     n_f = frag_orb.shape[1] if frag_orb.size else 0
     n_emb = n_f + n_bath
@@ -264,23 +257,12 @@ def build_embedding_basis(nao, frag_idx, env_idx, frag_orb, bath_orb, S_ao):
     if n_bath > 0:
         B_raw[env_idx[:, None], cp.arange(n_bath)[None, :] + n_f] = bath_orb
 
-    S = _as_cupy(S_ao)
-    M = B_raw.T @ S @ B_raw
-    M = _symmetrize(M)
-    try:
-        ev, evec = cp.linalg.eigh(M)
-    except cp.linalg.LinAlgError:
-        ev, evec = cp.linalg.eigh(M + 1e-14 * cp.eye(n_emb))
-    keep = ev > 1e-10
-    inv_sqrt = 1.0 / cp.sqrt(ev[keep])
-    B = B_raw @ evec[:, keep] * inv_sqrt[None, :]
-    return B
+    return B_raw
 
 
 def build_core_dm(env_idx, core_orb, nao, S_ao):
     """Build frozen-core density matrix from core orbitals in environment."""
     env_idx = _as_cupy(env_idx)
-    n_env = env_idx.size
     if core_orb.size == 0 or core_orb.shape[1] == 0:
         return cp.zeros((nao, nao), dtype=float)
     C_core = cp.zeros((nao, core_orb.shape[1]), dtype=float)
@@ -431,8 +413,12 @@ class DMET(lib.StreamObject):
         if S_ao is None:
             S_ao = _as_cupy(self.mf_outer.get_ovlp())
 
+        mo_coeff = _as_cupy(mo_coeff)
+        mo_occ = _as_cupy(mo_occ)
+        C_occ = mo_coeff[:, mo_occ > 0]
+
         frag_orb, bath_orb, core_orb, info = density_matrix_decompose(
-            D_ao, S_ao, self.frag_idx[ifrag], self.env_idx[ifrag], self.threshold)
+            C_occ, S_ao, self.frag_idx[ifrag], self.env_idx[ifrag], self.threshold)
 
         nao = S_ao.shape[0]
         n_frag_sel = info['n_frag_orbitals']
@@ -501,9 +487,11 @@ class DMET(lib.StreamObject):
         nemb = self.B[ifrag].shape[1]
         n_total_electrons = float(self.full_mol.nelectron)
         s_ao = _as_cupy(self.mf_outer.get_ovlp())
-        n_core_e = float(cp.trace(self.dm_core[ifrag] @ s_ao))
-        n_emb_electrons = int(round(n_total_electrons - n_core_e))
-        n_emb_electrons = max(0, min(n_emb_electrons, 2 * nemb))
+
+        n_total_electrons = int(self.full_mol.nelectron)
+        n_core_e = int(self.eig_info[ifrag]['n_core_electrons'])
+        
+        n_emb_electrons = max(0, min(n_total_electrons - n_core_e, 2 * nemb))
 
         emb_mol = _build_embedded_mole(
             nemb=nemb,
@@ -516,7 +504,10 @@ class DMET(lib.StreamObject):
         mf_inner = _instantiate_inner_mf(self.mf_inner_template, emb_mol)
 
         h_emb = self.h_emb[ifrag]
-        ovlp = cp.eye(nemb)
+        
+        # Provide the actual non-orthogonal metric to the inner solver
+        s_emb = _symmetrize(self.B[ifrag].T @ s_ao @ self.B[ifrag])
+        ovlp = s_emb
 
         e_nuc = float(self.full_mol.energy_nuc())
         mf_inner.get_hcore = lambda *args, **kwargs: h_emb
@@ -564,9 +555,13 @@ class DMET(lib.StreamObject):
         dm_emb_init = self.dm_emb_init[ifrag]
         if dm_emb_init is None or dm_emb_init.size == 0:
             sB = s_ao @ self.B[ifrag]
-            dm_emb_init = sB.T @ _as_cupy(dm_full_ao) @ sB
+            # Proper initial guess projection with S_emb^-1
+            S_emb_inv = cp.linalg.pinv(s_emb)
+            dm_emb_init = S_emb_inv @ sB.T @ _as_cupy(dm_full_ao) @ sB @ S_emb_inv
 
-        trace = float(cp.trace(dm_emb_init))
+        s_emb = _symmetrize(self.B[ifrag].T @ s_ao @ self.B[ifrag])
+        trace = float(cp.trace(dm_emb_init @ s_emb))
+        print("debug, trace:", trace, n_emb_electrons)
         if trace > 0.5 and n_emb_electrons > 0:
             dm_emb_init = dm_emb_init * (n_emb_electrons / trace)
         self.dm_emb_init[ifrag] = dm_emb_init
@@ -622,7 +617,7 @@ class DMET(lib.StreamObject):
                 dm_inners.append(dm_inner_full_ao)
 
                 dm1_emb = dm_emb
-                n_f = self.eig_info[ifrag]['n_frag_orbitals']
+                n_f = len(self.frag_idx[ifrag])
 
                 v_core_ao = self.v_core_ao[ifrag]
                 v_core_emb = B.T @ v_core_ao @ B
@@ -664,7 +659,11 @@ class DMET(lib.StreamObject):
                 diff = dm_high[idx_mesh] - dm_low[idx_mesh]
                 error += float(cp.linalg.norm(diff))
 
-                self.u_ao[idx_mesh] -= 0.5 * diff
+                # Lower the index of the contravariant density difference tensor using the metric
+                S_A_cupy = s_ao[idx_mesh]
+                diff_cov = S_A_cupy @ diff @ S_A_cupy
+
+                self.u_ao[idx_mesh] -= 0.5 * diff_cov
                 self.u_ao = _symmetrize(self.u_ao)
 
             self.log.note(f"Macro Iter {macro_iter + 1:2d} | E_DMET = {e_tot:.8f} | max(dD) = {error:.6e}")
