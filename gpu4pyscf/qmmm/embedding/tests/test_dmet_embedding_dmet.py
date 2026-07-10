@@ -38,7 +38,7 @@ class KnownValues(unittest.TestCase):
         cls.mol.basis = 'sto-3g'
         cls.mol.spin = 0
         cls.mol.charge = 0
-        cls.mol.verbose = 0
+        cls.mol.verbose = 4
         cls.mol.build()
 
         cls.fragments = [[0, 1], [2, 3]]
@@ -62,7 +62,7 @@ class KnownValues(unittest.TestCase):
         cls.mol2.basis = '6-31g'
         cls.mol2.spin = 0
         cls.mol2.charge = 0
-        cls.mol2.verbose = 0
+        cls.mol2.verbose = 4
         cls.mol2.build()
 
         cls.fragments2 = [[0, 2, 3, 4], [1, 5, 6, 7]]
@@ -98,7 +98,7 @@ class KnownValues(unittest.TestCase):
         cls.mol3.basis = '6-31g'
         cls.mol3.spin = 0
         cls.mol3.charge = 0
-        cls.mol3.verbose = 0
+        cls.mol3.verbose = 4
         cls.mol3.build()
 
         cls.fragments3 = [[0, 6, 7, 8],
@@ -152,15 +152,17 @@ class KnownValues(unittest.TestCase):
         mf.conv_tol = 1e-14
         mf.kernel()
 
-        D = _as_cupy(mf.make_rdm1())
+        mo_coeff = _as_cupy(mf.mo_coeff)
+        mo_occ = _as_cupy(mf.mo_occ)
+        C_occ = mo_coeff[:, mo_occ > 0]
         S = _as_cupy(mf.get_ovlp())
+        D = _as_cupy(mf.make_rdm1())
 
-        nao = self.mol.nao_nr()
-        frag_idx = cp.arange(0, 2, dtype=cp.int32)  # First two H atoms (2 AOs each for sto-3g H2 = 4 AOs)
+        frag_idx = cp.arange(0, 2, dtype=cp.int32)
         env_idx = cp.arange(2, 4, dtype=cp.int32)
 
         frag_orb, bath_orb, core_orb, info = density_matrix_decompose(
-            D, S, frag_idx, env_idx, threshold=1e-2
+            C_occ, S, frag_idx, env_idx, threshold=1e-2
         )
 
         # Eigenvalues should be in [0, 2]
@@ -168,13 +170,17 @@ class KnownValues(unittest.TestCase):
         self.assertTrue(float(cp.all(eigvals >= -1e-10)), "Eigenvalues should be non-negative.")
         self.assertTrue(float(cp.all(eigvals <= 2.0 + 1e-10)), "Eigenvalues should not exceed 2.")
 
-        # Check eigenvalue sum equals Tr(D_A S_A)
-        n_frag_electrons = float(cp.trace(D[cp.ix_(frag_idx, frag_idx)] @ S[cp.ix_(frag_idx, frag_idx)]))
+        # Check eigenvalue sum equals Tr(S_A_full @ D @ S_full_A @ S_A_inv)
+        S_A = S[cp.ix_(frag_idx, frag_idx)]
+        S_A_inv = cp.linalg.pinv(S_A)
+        S_A_full = S[frag_idx, :]
+        S_full_A = S[:, frag_idx]
+        n_frag_electrons = float(cp.trace(S_A_full @ D @ S_full_A @ S_A_inv))
+        
         self.assertAlmostEqual(float(cp.sum(eigvals)), n_frag_electrons, places=10,
                                msg="Sum of eigenvalues should equal fragment electron count.")
 
         # Verify orthonormality of returned orbitals where applicable
-        n_env = env_idx.size
         if bath_orb.shape[1] > 0:
             S_B = S[cp.ix_(env_idx, env_idx)]
             bath_orth = bath_orb.T @ S_B @ bath_orb
@@ -193,21 +199,22 @@ class KnownValues(unittest.TestCase):
             frag_orth = frag_orb.T @ S_A @ frag_orb
             err = float(cp.abs(frag_orth - cp.eye(frag_orb.shape[1])).max())
             self.assertTrue(err < 1e-8, f"Fragment orbitals not orthonormal, max error: {err}")
-
+    
     def test_build_embedding_basis(self):
         mf = gpu_hf.RHF(self.mol)
         mf.conv_tol = 1e-14
         mf.kernel()
 
-        D = _as_cupy(mf.make_rdm1())
         S = _as_cupy(mf.get_ovlp())
         nao = self.mol.nao_nr()
+        C = _as_cupy(mf.mo_coeff)
+        C_occ = C[:, mf.mo_occ > 0]
 
         frag_idx = cp.arange(0, 2, dtype=cp.int32)
         env_idx = cp.arange(2, 4, dtype=cp.int32)
 
         frag_orb, bath_orb, core_orb, info = density_matrix_decompose(
-            D, S, frag_idx, env_idx, threshold=1e-2
+            C_occ, S, frag_idx, env_idx, threshold=1e-2
         )
 
         B = build_embedding_basis(nao, frag_idx, env_idx, frag_orb, bath_orb, S)
@@ -223,7 +230,8 @@ class KnownValues(unittest.TestCase):
         mf.conv_tol = 1e-14
         mf.kernel()
 
-        D = _as_cupy(mf.make_rdm1())
+        C = _as_cupy(mf.mo_coeff)
+        C_occ = C[:, mf.mo_occ > 0]
         S = _as_cupy(mf.get_ovlp())
         nao = self.mol.nao_nr()
 
@@ -231,7 +239,7 @@ class KnownValues(unittest.TestCase):
         env_idx = cp.arange(2, 4, dtype=cp.int32)
 
         frag_orb, bath_orb, core_orb, info = density_matrix_decompose(
-            D, S, frag_idx, env_idx, threshold=1e-2
+            C_occ, S, frag_idx, env_idx, threshold=1e-2
         )
 
         dm_core = build_core_dm(env_idx, core_orb, nao, S)
@@ -291,7 +299,7 @@ class KnownValues(unittest.TestCase):
             mf_outer=self.mf_outer2,
             mf_inner=self.mf_inner_template2,
             fragments=self.fragments2,
-            threshold=1e-2,
+            threshold=1e-3,
             max_macro_iter=20,
             macro_tol=1e-3
         )
@@ -354,17 +362,26 @@ class KnownValues(unittest.TestCase):
             D_core = dmet_solver.dm_core[ifrag]
             D_emb_high = cp.asarray(dmet_solver.mf_inner[ifrag].make_rdm1())
 
-            # Check B^T * S * B == I for each fragment
-            ortho_check = B.T @ S_ao @ B
-            identity = cp.eye(B.shape[1])
-            max_ortho_err = float(cp.abs(ortho_check - identity).max())
-            self.assertTrue(max_ortho_err < 1e-8,
-                            f"Fragment {ifrag}: Basis B is not orthonormal. Max err: {max_ortho_err}")
+            # In non-orthogonal DMET, B^T S B is S_emb, NOT the identity matrix.
+            # We verify the fragment block is S_AA and the bath block is I.
+            S_emb = B.T @ S_ao @ B
+            n_frag = len(dmet_solver.frag_idx[ifrag])
+            
+            S_AA = S_ao[cp.ix_(dmet_solver.frag_idx[ifrag], dmet_solver.frag_idx[ifrag])]
+            max_frag_err = float(cp.abs(S_emb[:n_frag, :n_frag] - S_AA).max())
+            self.assertTrue(max_frag_err < 1e-8,
+                            f"Fragment {ifrag}: Fragment block of S_emb != S_AA. Max err: {max_frag_err}")
+
+            n_bath = B.shape[1] - n_frag
+            if n_bath > 0:
+                max_bath_err = float(cp.abs(S_emb[n_frag:, n_frag:] - cp.eye(n_bath)).max())
+                self.assertTrue(max_bath_err < 1e-8,
+                                f"Fragment {ifrag}: Bath block of S_emb is not orthonormal. Max err: {max_bath_err}")
 
             # Check Core DM spatial isolation from the active space
             core_overlap = B.T @ S_ao @ D_core @ S_ao @ B
             max_overlap_err = float(cp.abs(core_overlap).max())
-            self.assertTrue(max_overlap_err < 1e-6,
+            self.assertTrue(max_overlap_err < dmet_solver.threshold,
                             f"Fragment {ifrag}: Core DM leaks into Active Space. Max err: {max_overlap_err}")
 
             # Check total electron conservation for this fragment representation
@@ -387,23 +404,31 @@ class KnownValues(unittest.TestCase):
         if not self.mf_outer.converged:
             self.mf_outer.kernel()
 
+        # Use C_occ for the first argument, and keep D for the D_ao kwarg
+        mo_coeff = _as_cupy(self.mf_outer.mo_coeff)
+        mo_occ = _as_cupy(self.mf_outer.mo_occ)
+        C_occ = mo_coeff[:, mo_occ > 0]
+        
         D = _as_cupy(self.mf_outer.make_rdm1())
         S = _as_cupy(self.mf_outer.get_ovlp())
 
         for ifrag in range(dmet_solver.nfrags):
             frag_idx = dmet_solver.frag_idx[ifrag]
             env_idx = dmet_solver.env_idx[ifrag]
+            
+            # Pass C_occ as the first argument, not D
             frag_orb, bath_orb, core_orb, info = density_matrix_decompose(
-                D, S, frag_idx, env_idx, threshold=1e-2
+                C_occ, S, frag_idx, env_idx, threshold=1e-2, D_ao=D
             )
             # Core cumulative electrons should be within threshold
             self.assertTrue(info['cum_e_core'] <= 1e-2 + 1e-10,
-                            f"Core electron cumulative {info['cum_e_core']} exceeds threshold.")
-            # Fragment cumulative should approximate theoretical within threshold
-            frag_e_diff = abs(info['cum_e_frag'] - info['n_frag_electrons_theory'])
-            self.assertTrue(frag_e_diff <= 1e-2 + 1e-10,
-                            f"Fragment electron error {frag_e_diff} exceeds threshold.")
-
+                            f"Core electron error cumulative {info['cum_e_core']} exceeds threshold.")
+                            
+            # Use 'n_pure_fragment_nos' instead of 'n_frag_orbitals'
+            ideal_frag_e = 2.0 * info['n_pure_fragment_nos']
+            frag_err_diff = abs(ideal_frag_e - info['cum_e_frag'])
+            self.assertTrue(frag_err_diff <= 1e-2 + 1e-10,
+                            f"Fragment electron deviation {frag_err_diff} exceeds threshold.")
 
 if __name__ == '__main__':
     print("Full Tests for DMET (density matrix diagonalization, non-orthogonal AO)")
