@@ -258,34 +258,6 @@ def density_matrix_decompose(C_occ, S_ao, frag_idx, env_idx, threshold=1e-2,
     return V_frag, embedded_env_orb, core_orb, info
 
 
-def build_embedding_basis(nao, frag_idx, env_idx, frag_orb, bath_orb, S_ao):
-    """
-    Construct the AO -> embedded transformation matrix B^{mu}_{k}
-    in the non-orthogonal AO basis.  The returned basis generally has
-    overlap S_emb = B^T S B, which must be used in density traces.
-
-    Kept for backward compatibility; the B matrix is already constructed
-    inside density_matrix_decompose, but this function provides a
-    standalone constructor.
-    """
-    frag_idx = _as_cupy(frag_idx)
-    env_idx = _as_cupy(env_idx)
-    n_bath = bath_orb.shape[1] if bath_orb.size else 0
-    n_f = frag_orb.shape[1] if frag_orb.size else 0
-    n_emb = n_f + n_bath
-
-    B_raw = cp.zeros((nao, n_emb), dtype=float)
-    if n_f > 0:
-        B_raw[frag_idx[:, None], cp.arange(n_f)[None, :]] = frag_orb
-    if n_bath > 0:
-        if bath_orb.shape[0] == nao:
-            B_raw[:, cp.arange(n_bath) + n_f] = bath_orb
-        else:
-            B_raw[env_idx[:, None], cp.arange(n_bath)[None, :] + n_f] = bath_orb
-
-    return B_raw
-
-
 def build_core_dm(env_idx, core_orb, nao, S_ao):
     """Build frozen-core density matrix from core orbitals."""
     env_idx = _as_cupy(env_idx)

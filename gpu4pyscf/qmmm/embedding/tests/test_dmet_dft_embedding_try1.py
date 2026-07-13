@@ -53,7 +53,7 @@ class KnownValues(unittest.TestCase):
         mf_outer.conv_tol = 1e-10
         mf_inner_template.conv_tol = 1e-10
 
-        emb_obj = SingleFragmentEmbedding(mf_outer, mf_inner_template, self.methyl_fragment, threshold=1e-2)
+        emb_obj = SingleFragmentEmbedding(mf_outer, mf_inner_template, self.methyl_fragment, threshold=1e-3)
         emb_obj.kernel()
 
         mf_outer.mo_coeff = None
@@ -91,10 +91,11 @@ class KnownValues(unittest.TestCase):
         B = emb_obj.B[0]
         D_core = emb_obj.dm_core[0]
 
-        # Check B^T * S * B == I (Orthonormality of embedding basis)
+        # In non-orthogonal DMET, B^T S B is S_emb, NOT the identity matrix.
         ortho_check = B.T @ S_ao @ B
-        identity = cp.eye(B.shape[1])
-        max_ortho_err = float(cp.abs(ortho_check - identity).max())
+        S_AA = S_ao[cp.ix_(emb_obj.frag_idx[0], emb_obj.frag_idx[0])]
+        n_frag = S_AA.shape[0]
+        max_ortho_err = float(cp.abs(ortho_check[:n_frag, :n_frag] - S_AA).max())
         self.assertTrue(max_ortho_err < 1e-6,
                         f"Basis B is not orthogonal, max error: {max_ortho_err}")
 

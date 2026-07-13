@@ -20,7 +20,7 @@ from pyscf import gto
 from gpu4pyscf.scf import hf as gpu_hf
 from gpu4pyscf.qmmm.embedding.embedding_dmet import (
     DMET, density_matrix_decompose, get_fragment_ao_indices,
-    _orthogonalize, build_embedding_basis, build_core_dm, _as_cupy
+    _orthogonalize, build_core_dm, _as_cupy
 )
 from gpu4pyscf.qmmm.embedding import embedding_dmet
 
@@ -199,31 +199,6 @@ class KnownValues(unittest.TestCase):
             frag_orth = frag_orb.T @ S_A @ frag_orb
             err = float(cp.abs(frag_orth - cp.eye(frag_orb.shape[1])).max())
             self.assertTrue(err < 1e-8, f"Fragment orbitals not orthonormal, max error: {err}")
-    
-    def test_build_embedding_basis(self):
-        mf = gpu_hf.RHF(self.mol)
-        mf.conv_tol = 1e-14
-        mf.kernel()
-
-        S = _as_cupy(mf.get_ovlp())
-        nao = self.mol.nao_nr()
-        C = _as_cupy(mf.mo_coeff)
-        C_occ = C[:, mf.mo_occ > 0]
-
-        frag_idx = cp.arange(0, 2, dtype=cp.int32)
-        env_idx = cp.arange(2, 4, dtype=cp.int32)
-
-        frag_orb, bath_orb, core_orb, info = density_matrix_decompose(
-            C_occ, S, frag_idx, env_idx, threshold=1e-2
-        )
-
-        B = build_embedding_basis(nao, frag_idx, env_idx, frag_orb, bath_orb, S)
-
-        # B^T S B should be identity
-        BtSB = B.T @ S @ B
-        n_emb = B.shape[1]
-        err = float(cp.abs(BtSB - cp.eye(n_emb)).max())
-        self.assertTrue(err < 1e-8, f"Embedding basis B not orthonormal (B^T S B != I), max error: {err}")
 
     def test_build_core_dm(self):
         mf = gpu_hf.RHF(self.mol)
