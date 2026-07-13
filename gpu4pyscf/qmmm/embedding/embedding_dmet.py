@@ -150,20 +150,20 @@ def density_matrix_decompose(C_occ, S_ao, frag_idx, env_idx, threshold=1e-2,
     n_A = eigvals.size
     n_frag_electrons_theory = float(cp.sum(eigvals))
 
-    frag_guess_idx = [
-        i for i in range(n_A)
-        if float(eigvals[i]) >= 2.0 - threshold
-    ]
-    core_guess_idx = [
-        i for i in range(n_A)
-        if float(eigvals[i]) <= threshold
-    ]
-    frag_set = set(frag_guess_idx)
-    core_guess_set = set(core_guess_idx)
-    bath_guess_idx = [
-        i for i in range(n_A)
-        if i not in frag_set and i not in core_guess_set
-    ]
+    # Select pure fragment/core guesses by cumulative electron-number error:
+    # fragment leakage is sum(2 - eigval), core leakage is sum(eigval).
+    elec_tol = float(threshold)
+    frag_leak = cp.cumsum(2.0 - eigvals)
+    n_frag_guess = int(cp.count_nonzero(frag_leak <= elec_tol))
+
+    core_leak = cp.cumsum(eigvals[::-1])
+    n_core_guess = int(cp.count_nonzero(core_leak <= elec_tol))
+    if n_frag_guess + n_core_guess > n_A:
+        n_core_guess = max(0, n_A - n_frag_guess)
+
+    frag_guess_idx = list(range(n_frag_guess))
+    core_guess_idx = list(range(n_A - n_core_guess, n_A)) if n_core_guess else []
+    bath_guess_idx = list(range(n_frag_guess, n_A - n_core_guess))
     complement_guess_idx = frag_guess_idx
 
     cum_e_frag = float(cp.sum(eigvals[frag_guess_idx])) if frag_guess_idx else 0.0
