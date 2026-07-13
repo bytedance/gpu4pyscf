@@ -95,7 +95,7 @@ class KnownValues(unittest.TestCase):
             H  -0.9377500000   3.1870000000   0.8900000000
             H  -0.9377500000   3.1870000000  -0.8900000000
         '''
-        cls.mol3.basis = '6-31g'
+        cls.mol3.basis = 'def2svp'
         cls.mol3.spin = 0
         cls.mol3.charge = 0
         cls.mol3.verbose = 4
@@ -182,14 +182,14 @@ class KnownValues(unittest.TestCase):
 
         # Verify orthonormality of returned orbitals where applicable
         if bath_orb.shape[1] > 0:
-            S_B = S[cp.ix_(env_idx, env_idx)]
-            bath_orth = bath_orb.T @ S_B @ bath_orb
+            # density_matrix_decompose returns bath/complement orbitals in the
+            # full AO representation for the non-orthogonal implementation.
+            bath_orth = bath_orb.T @ S @ bath_orb
             err = float(cp.abs(bath_orth - cp.eye(bath_orb.shape[1])).max())
             self.assertTrue(err < 1e-8, f"Bath orbitals not orthonormal, max error: {err}")
 
         if core_orb.shape[1] > 0:
-            S_B = S[cp.ix_(env_idx, env_idx)]
-            core_orth = core_orb.T @ S_B @ core_orb
+            core_orth = core_orb.T @ S @ core_orb
             err = float(cp.abs(core_orth - cp.eye(core_orb.shape[1])).max())
             self.assertTrue(err < 1e-8, f"Core orbitals not orthonormal, max error: {err}")
 
