@@ -20,7 +20,6 @@ from pyscf import gto
 from pyscf import lib
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.cupy_helper import tag_array, eigh
-import pyscf.ao2mo
 
 
 def _as_cupy(x):
