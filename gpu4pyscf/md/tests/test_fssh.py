@@ -13,13 +13,14 @@
 # limitations under the License.
 
 import unittest
+from unittest import mock
 import re
 import numpy as np
 import cupy as cp
 import pyscf
 from pyscf import lib
 from gpu4pyscf.md.wigner_sampling import wigner_samples
-from gpu4pyscf.md.fssh_tddft import FSSH
+from gpu4pyscf.md.fssh_tddft import FSSH, _get_x_amplitudes
 from gpu4pyscf.md.fssh import h5_to_xyz
 from gpu4pyscf.md.distributions import maxwell_boltzmann_velocities
 
@@ -35,6 +36,28 @@ def extract_energies(filename):
     return np.array(energies)
 
 class KnownValues(unittest.TestCase):
+    def test_state_amplitude_mapping(self):
+        class Scanner:
+            xy = [
+                (np.array([[1., 2.]]), None),
+                (np.array([[3., 4.]]), None),
+            ]
+
+        xs = _get_x_amplitudes(Scanner(), [0, 2], 1, 2)
+        self.assertIsNone(xs[0])
+        np.testing.assert_array_equal(xs[2], [[3., 4.]])
+
+        class RisScanner:
+            xy = (
+                np.array([[1., 2.], [3., 4.]]),
+                np.zeros((2, 2)),
+            )
+
+        with mock.patch('gpu4pyscf.tdscf.ris.RisBase', RisScanner):
+            xs = _get_x_amplitudes(RisScanner(), [0, 2], 1, 2)
+        self.assertIsNone(xs[0])
+        np.testing.assert_allclose(xs[2], np.array([[3., 4.]]) / np.sqrt(2))
+
     def test_wigner_sampling(self):
         mol = pyscf.M(
             atom='''
