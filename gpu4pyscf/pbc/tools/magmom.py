@@ -1,4 +1,4 @@
-# Copyright 2021-2024 The PySCF Developers. All Rights Reserved.
+# Copyright 2026 The PySCF Developers. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,12 +14,14 @@
 
 '''Tools for constructing atom-resolved magnetic moments in periodic systems.'''
 
-from typing import Sequence
-
 import cupy as cp
 import numpy as np
-
+import scipy.linalg
+from pyscf import scf
+from pyscf import gto
+from pyscf.data import elements
 from gpu4pyscf.lib import logger
+from gpu4pyscf.pbc.scf.kuhf import KUHF
 
 
 __all__ = [
@@ -49,70 +51,23 @@ def get_spin_flip_magmom(cell, dm, atom_indices):
         raise ValueError(
             f'dm must have shape (2, nkpts, {nao}, {nao}) with nkpts > 0; '
             f'got {dm.shape}')
-    if isinstance(atom_indices, (str, bytes)) or not isinstance(
-            atom_indices, Sequence):
+
+    atom_indices = np.asarray(atom_indices)
+    if not (atom_indices.ndim == 1 and np.issubdtype(atom_indices.dtype, np.integer)):
         raise TypeError('atom_indices must be a sequence of atom indices')
 
-    checked_indices = []
-    for ia in atom_indices:
-        if isinstance(ia, (bool, np.bool_)) or not isinstance(
-                ia, (int, np.integer)):
-            raise TypeError(f'Atom index {ia!r} is not an integer')
-        if not 0 <= ia < cell.natm:
-            raise IndexError(
-                f'Atom index {ia} is outside [0, {cell.natm})')
-        checked_indices.append(int(ia))
+    assert np.all((0 <= atom_indices) & (atom_indices < cell.natm))
 
     dm_flipped = dm.copy()
     aoslices = cell.aoslice_by_atom()
-    for ia in checked_indices:
+    for ia in atom_indices:
         p0, p1 = aoslices[ia, 2:]
         dm_flipped[0, :, p0:p1, p0:p1] = dm[1, :, p0:p1, p0:p1]
         dm_flipped[1, :, p0:p1, p0:p1] = dm[0, :, p0:p1, p0:p1]
     return dm_flipped
 
 
-def _validate_magmom_input(cell, kpts, magmoms_dict, method):
-    if not hasattr(magmoms_dict, 'items'):
-        raise TypeError(
-            'magmoms_dict must be a mapping of atom indices to magnetic moments')
-
-    kpts = np.asarray(kpts)
-    if kpts.ndim == 1:
-        kpts = kpts.reshape(1, -1)
-    if kpts.ndim != 2 or kpts.shape[1] != 3 or len(kpts) == 0:
-        raise ValueError('kpts must have shape (nkpts, 3)')
-    if not np.isfinite(kpts).all():
-        raise ValueError('kpts must contain only finite coordinates')
-
-    if not isinstance(method, str):
-        raise TypeError('method must be a string')
-    method = method.lower()
-    if method not in ('uniform', 'valence', 'spin_sad'):
-        raise ValueError(
-            f'Unknown magnetic-moment initial guess method {method!r}')
-
-    magmoms = {}
-    for ia, magmom in magmoms_dict.items():
-        if isinstance(ia, (bool, np.bool_)) or not isinstance(
-                ia, (int, np.integer)):
-            raise TypeError(f'Atom index {ia!r} is not an integer')
-        if not 0 <= ia < cell.natm:
-            raise IndexError(f'Atom index {ia} is outside [0, {cell.natm})')
-        try:
-            magmom = float(magmom)
-        except (TypeError, ValueError) as err:
-            raise TypeError(
-                f'Magnetic moment for atom {ia} is not a number') from err
-        if not np.isfinite(magmom):
-            raise ValueError(f'Magnetic moment for atom {ia} must be finite')
-        magmoms[int(ia)] = magmom
-    return kpts, magmoms, method
-
-
 def _get_valence_ao_indices(cell, ia):
-    from pyscf import gto
-    from pyscf.data import elements
 
     labels = cell.ao_labels(fmt=False)
     p0, p1 = cell.aoslice_by_atom()[ia, 2:]
@@ -148,8 +103,6 @@ def _get_valence_ao_indices(cell, ia):
 
 
 def _make_atomic_mol(cell, ia, spin):
-    from pyscf import gto
-
     atm = cell.copy(deep=False)
     atm._atom = [cell._atom[ia]]
     atm.atom = atm._atom
@@ -173,12 +126,35 @@ def _make_atomic_mol(cell, ia, spin):
 
 
 def _get_spin_sad(cell, kpts, magmoms):
-    import scipy.linalg
-    from pyscf import scf
-
     aoslices = cell.aoslice_by_atom()
     dma_blocks = []
     dmb_blocks = []
+
+    def get_atomic_density(spin, density_cache):
+        if spin in density_cache:
+            return density_cache[spin]
+
+        # An odd-electron unpolarized density.
+        if spin == 0 and nelectron % 2 == 1:
+            dma_ref, dmb_ref = get_atomic_density(1, density_cache)
+            dm = (dma_ref + dmb_ref) * .5
+            density_cache[spin] = (dm, dm)
+            return density_cache[spin]
+
+        atm.spin = spin
+        atm_mf = scf.UHF(atm)
+
+        if max(atm.nelec) < atm.nao_nr():
+            atm_mf = scf.addons.frac_occ(atm_mf)
+        atm_mf.verbose = cell.verbose
+        atm_mf.kernel()
+        if not atm_mf.converged:
+            logger.warn(
+                cell, 'Atomic UHF for atom %d (%s) did not converge',
+                ia, cell.atom_symbol(ia))
+        density_cache[spin] = atm_mf.make_rdm1()
+        return density_cache[spin]
+
     for ia, (p0, p1) in enumerate(aoslices[:, 2:]):
         nao_atm = p1 - p0
         magmom = magmoms.get(ia, 0.)
@@ -208,34 +184,10 @@ def _get_spin_sad(cell, kpts, magmoms):
 
         density_cache = {}
 
-        def get_atomic_density(spin):
-            if spin in density_cache:
-                return density_cache[spin]
-
-            # An odd-electron unpolarized density.
-            if spin == 0 and nelectron % 2:
-                dma_ref, dmb_ref = get_atomic_density(1)
-                dm = (dma_ref + dmb_ref) * .5
-                density_cache[spin] = (dm, dm)
-                return density_cache[spin]
-
-            atm.spin = spin
-            atm_mf = scf.UHF(atm)
-
-            if max(atm.nelec) < atm.nao_nr():
-                atm_mf = scf.addons.frac_occ(atm_mf)
-            atm_mf.verbose = cell.verbose
-            atm_mf.kernel()
-            if not atm_mf.converged:
-                logger.warn(
-                    cell, 'Atomic UHF for atom %d (%s) did not converge',
-                    ia, cell.atom_symbol(ia))
-            density_cache[spin] = atm_mf.make_rdm1()
-            return density_cache[spin]
-
-        spin_states = list(range(nelectron % 2, nelectron + 1, 2))
-        if spin_states[0] != 0:
-            spin_states.insert(0, 0)
+        if nelectron % 2 == 0:
+            spin_states = np.arange(0, nelectron + 1, 2)
+        else:
+            spin_states = np.append(0, np.arange(1, nelectron + 1, 2))
 
         # For non-integer spin, find the closest integer spin states.
         upper_index = np.searchsorted(spin_states, target_spin)
@@ -246,9 +198,9 @@ def _get_spin_sad(cell, kpts, magmoms):
             lower_spin = spin_states[upper_index - 1]
             upper_spin = spin_states[upper_index]
 
-        dma, dmb = get_atomic_density(lower_spin)
+        dma, dmb = get_atomic_density(lower_spin, density_cache)
         if lower_spin != upper_spin:
-            dma_upper, dmb_upper = get_atomic_density(upper_spin)
+            dma_upper, dmb_upper = get_atomic_density(upper_spin, density_cache)
             upper_weight = (
                 (target_spin - lower_spin) / (upper_spin - lower_spin)
             )
@@ -264,10 +216,8 @@ def _get_spin_sad(cell, kpts, magmoms):
     dm_r0 = np.asarray((scipy.linalg.block_diag(*dma_blocks),
                         scipy.linalg.block_diag(*dmb_blocks)))
 
-    translations = np.zeros((1, 3))
-    phase = np.exp(-1j * np.dot(kpts, translations.T))
-    dm_kpts = np.einsum('kR,sRij->skij', phase, dm_r0[:, None])
-    return cp.asarray(np.real_if_close(dm_kpts))
+    dm_kpts = cp.repeat(cp.asarray(dm_r0[:,None]), len(kpts), axis=1)
+    return dm_kpts
 
 
 def get_init_guess_with_magmom(cell, kpts, magmoms_dict, method='spin_sad',
@@ -296,14 +246,17 @@ def get_init_guess_with_magmom(cell, kpts, magmoms_dict, method='spin_sad',
     charge while producing the requested average moment. All-electron,
     molecular ECP, and GTH pseudopotential cells are supported.
     '''
-    from gpu4pyscf.pbc.scf.kuhf import KUHF
 
-    kpts, magmoms, method = _validate_magmom_input(
-        cell, kpts, magmoms_dict, method)
+    method = method.lower()
+    assert method in ('uniform', 'valence', 'spin_sad')
+    assert isinstance(magmoms_dict, dict)
+    magmoms = magmoms_dict
+
+    kpts = kpts.reshape(-1, 3)
 
     # Preserve the native initial guess exactly when no spin polarization was
     # requested. In particular, keep any tagged orbital information.
-    if not any(magmoms.values()):
+    if not magmoms:
         return KUHF(cell, kpts=kpts).get_init_guess(key=key)
 
     if method == 'spin_sad':
