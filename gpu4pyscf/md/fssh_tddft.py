@@ -38,8 +38,15 @@ def _get_x_amplitudes(td_scanner, states, nocc, nvir):
 
 class FSSH_TDDFT(FSSH):
     def __init__(self, td, states):
-        nstates = len(states)
-        assert td.nstates >= nstates-1
+        super().__init__(td.mol, states)
+        if len(self.states) != len(set(self.states)):
+            raise ValueError("State indices must be unique")
+        self.states.sort()
+        self.cur_state = self.states[0]
+        if self.states[-1] > td.nstates:
+            raise ValueError(
+                f"State {self.states[-1]} requires at least "
+                f"{self.states[-1]} TD excited states, but td.nstates={td.nstates}")
 
         self.tddft = td.as_scanner()
         # Initialize with the batched multi-state NAC module
@@ -47,7 +54,6 @@ class FSSH_TDDFT(FSSH):
 
         # to track the phase of the ground state and excited states
         self._sign = np.ones(td.nstates+1)
-        super().__init__(td.mol, states)
 
     def evaluate_pes(self, position, cur_state, with_nacv=True):
         """
@@ -115,8 +121,7 @@ class FSSH_TDDFT(FSSH):
         if 0 in self.states:
             if abs(ground_ovlp) < 0.3:
                 states_reorder.append(0)
-            else:
-                self._sign[0] *= np.sign(ground_ovlp)
+            self._sign[0] *= np.sign(ground_ovlp)
 
         for i in self.states:
             if i == 0:
