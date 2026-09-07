@@ -21,6 +21,7 @@ from pyscf import scf
 from pyscf import gto
 from pyscf.data import elements
 from gpu4pyscf.lib import logger
+from gpu4pyscf.pbc.scf.khf import KRHF
 from gpu4pyscf.pbc.scf.kuhf import KUHF
 
 
@@ -129,17 +130,20 @@ def _get_spin_sad(cell, kpts, magmoms):
     aoslices = cell.aoslice_by_atom()
     dma_blocks = []
     dmb_blocks = []
+    # Isolated-atom densities are position-independent.
+    density_cache = {}
 
-    def get_atomic_density(spin, density_cache):
-        if spin in density_cache:
-            return density_cache[spin]
+    def get_atomic_density(spin):
+        cache_key = (cell.atom_symbol(ia), int(spin))
+        if cache_key in density_cache:
+            return density_cache[cache_key]
 
         # An odd-electron unpolarized density.
         if spin == 0 and nelectron % 2 == 1:
-            dma_ref, dmb_ref = get_atomic_density(1, density_cache)
+            dma_ref, dmb_ref = get_atomic_density(1)
             dm = (dma_ref + dmb_ref) * .5
-            density_cache[spin] = (dm, dm)
-            return density_cache[spin]
+            density_cache[cache_key] = (dm, dm)
+            return density_cache[cache_key]
 
         atm.spin = spin
         atm_mf = scf.UHF(atm)
@@ -152,8 +156,8 @@ def _get_spin_sad(cell, kpts, magmoms):
             logger.warn(
                 cell, 'Atomic UHF for atom %d (%s) did not converge',
                 ia, cell.atom_symbol(ia))
-        density_cache[spin] = atm_mf.make_rdm1()
-        return density_cache[spin]
+        density_cache[cache_key] = atm_mf.make_rdm1()
+        return density_cache[cache_key]
 
     for ia, (p0, p1) in enumerate(aoslices[:, 2:]):
         nao_atm = p1 - p0
@@ -182,8 +186,6 @@ def _get_spin_sad(cell, kpts, magmoms):
                 f'{nelectron} electrons')
         target_spin = min(target_spin, float(nelectron))
 
-        density_cache = {}
-
         if nelectron % 2 == 0:
             spin_states = np.arange(0, nelectron + 1, 2)
         else:
@@ -198,9 +200,9 @@ def _get_spin_sad(cell, kpts, magmoms):
             lower_spin = spin_states[upper_index - 1]
             upper_spin = spin_states[upper_index]
 
-        dma, dmb = get_atomic_density(lower_spin, density_cache)
+        dma, dmb = get_atomic_density(lower_spin)
         if lower_spin != upper_spin:
-            dma_upper, dmb_upper = get_atomic_density(upper_spin, density_cache)
+            dma_upper, dmb_upper = get_atomic_density(upper_spin)
             upper_weight = (
                 (target_spin - lower_spin) / (upper_spin - lower_spin)
             )
@@ -263,11 +265,10 @@ def get_init_guess_with_magmom(cell, kpts, magmoms_dict, method='spin_sad',
         return _get_spin_sad(cell, kpts, magmoms)
 
     if dm_init is None:
-        dm0 = KUHF(cell, kpts=kpts).get_init_guess(key=key)
+        dm_charge = KRHF(cell, kpts=kpts).get_init_guess(key=key)
     else:
-        dm0 = dm_init
-    dm_charge = dm0[0] + dm0[1]
-    dm = cp.stack((dm_charge * .5, dm_charge * .5))
+        dm_charge = dm_init[0] + dm_init[1]
+    dm = cp.repeat(dm_charge[None] * .5, 2, axis=0)
     aoslices = cell.aoslice_by_atom()
     for ia, magmom in magmoms.items():
         if magmom == 0:
