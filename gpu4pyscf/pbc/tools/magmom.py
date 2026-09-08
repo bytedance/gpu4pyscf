@@ -21,8 +21,6 @@ from pyscf import scf
 from pyscf import gto
 from pyscf.data import elements
 from gpu4pyscf.lib import logger
-from gpu4pyscf.pbc.scf.khf import KRHF
-from gpu4pyscf.pbc.scf.kuhf import KUHF
 
 
 __all__ = [
@@ -54,7 +52,9 @@ def get_spin_flip_magmom(cell, dm, atom_indices):
             f'got {dm.shape}')
 
     atom_indices = np.asarray(atom_indices)
-    if not (atom_indices.ndim == 1 and np.issubdtype(atom_indices.dtype, np.integer)):
+    if (atom_indices.ndim != 1 or
+            (atom_indices.size > 0 and
+             not np.issubdtype(atom_indices.dtype, np.integer))):
         raise TypeError('atom_indices must be a sequence of atom indices')
 
     assert np.all((0 <= atom_indices) & (atom_indices < cell.natm))
@@ -258,13 +258,15 @@ def get_init_guess_with_magmom(cell, kpts, magmoms_dict, method='spin_sad',
 
     # Preserve the native initial guess exactly when no spin polarization was
     # requested. In particular, keep any tagged orbital information.
-    if not magmoms:
+    if not any(magmoms.values()):
+        from gpu4pyscf.pbc.scf.kuhf import KUHF
         return KUHF(cell, kpts=kpts).get_init_guess(key=key)
 
     if method == 'spin_sad':
         return _get_spin_sad(cell, kpts, magmoms)
 
     if dm_init is None:
+        from gpu4pyscf.pbc.scf.khf import KRHF
         dm_charge = KRHF(cell, kpts=kpts).get_init_guess(key=key)
     else:
         dm_charge = dm_init[0] + dm_init[1]

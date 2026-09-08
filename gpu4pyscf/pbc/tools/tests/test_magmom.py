@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import unittest
+from unittest import mock
 
 import cupy as cp
 import numpy as np
@@ -88,6 +89,19 @@ class KnownValues(unittest.TestCase):
         self.assertEqual(dm.shape, (2, 2, 8, 8))
         self.assert_magmom_constraints(magcell, kpts, dm, magmoms)
         cp.testing.assert_allclose(dm[:, 0], dm[:, 1], rtol=0, atol=0)
+
+    def test_spin_sad_reuses_equivalent_atomic_density(self):
+        magcell = self._magmom_cell()
+        kpts = magcell.make_kpts([2, 1, 1])
+        magmoms = {0: 1., 1: 1.}
+
+        with mock.patch.object(
+                magmom.scf, 'UHF', wraps=magmom.scf.UHF) as atomic_uhf:
+            dm = magmom.get_init_guess_with_magmom(
+                magcell, kpts, magmoms, method='spin_sad')
+
+        self.assertEqual(atomic_uhf.call_count, 1)
+        self.assert_magmom_constraints(magcell, kpts, dm, magmoms)
 
     def test_init_guess_with_magmom_spin_sad_fractional(self):
         magcell = self._magmom_cell()
