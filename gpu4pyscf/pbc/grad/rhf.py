@@ -149,7 +149,7 @@ class Gradients(GradientsBase):
             j_factor = 0
         elif xc.upper() != 'HF':
             from gpu4pyscf.pbc.grad.krks import get_vxc
-            de += get_vxc(ni, mf.cell, mf.grids, xc, dm[None], np.zeros((1, 3))) * 2
+            de += get_vxc(ni, mf.cell, mf.grids, xc, dm[None], np.zeros((1, 3)))
 
         if j_factor != 0 or k_sr != 0 or k_lr != 0:
             de += jk_energy_per_atom(
@@ -172,9 +172,6 @@ class Gradients(GradientsBase):
             mo_coeff = mf.mo_coeff
         if mo_occ is None:
             mo_occ = mf.mo_occ
-
-        if isinstance(mf, KohnShamDFT) and isinstance(mf.grids, BeckeGrids):
-            raise NotImplementedError('gradients for BeckeGrids not supported')
 
         if getattr(mf, 'with_x2c', None):
             raise NotImplementedError('X2C gradients')
