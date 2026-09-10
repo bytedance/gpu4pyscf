@@ -233,7 +233,7 @@ void _select_sub_ijk(uint32_t *sub_task_idx, int &num_sub_tasks,
     }
     __syncthreads();
 
-    for (int task_id = thread_id; task_id < tot_tasks+thread_id; task_id += THREADS) {
+    for (int task_id = thread_id; task_id < num_ijk_tasks+thread_id; task_id += THREADS) {
         register int ijk_id = 0;
         int keep = 0;
         int img_count = 0;
