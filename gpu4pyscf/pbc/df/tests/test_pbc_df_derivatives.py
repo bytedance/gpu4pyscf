@@ -19,8 +19,7 @@ from pyscf.pbc import gto
 from pyscf.pbc.df.df import make_auxcell
 from gpu4pyscf.lib.cupy_helper import tag_array, contract
 from gpu4pyscf.pbc.df import int3c2e
-from gpu4pyscf.pbc.df.grad import rhf, rhf_stress, uhf_stress
-from gpu4pyscf.pbc.df.grad import krhf_stress, kuhf_stress
+from gpu4pyscf.pbc.df.grad import rhf, uhf, krhf, kuhf
 from gpu4pyscf.pbc.df.int2c2e import sr_int2c2e
 from gpu4pyscf.pbc.df import rsdf_builder
 from gpu4pyscf.pbc.grad.rks_stress import _finite_diff_cells
@@ -111,7 +110,7 @@ def test_ej_derivatives_gamma_point_without_long_range():
     dm = tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
     omega = -0.3
     opt = int3c2e.SRInt3c2eOpt(cell, auxcell, omega).build()
-    grad, sigma = rhf_stress._get_ejk_derivatives(opt, dm, hermi=1, k_factor=0, omega=omega)
+    grad, sigma = rhf._get_ejk_derivatives(opt, dm, hermi=1, k_factor=0, omega=omega)
     assert abs(grad.sum(axis=0)).max() < 1e-11
 
     disp = 1e-4
@@ -143,7 +142,7 @@ def test_ej_derivatives_gamma_point_with_long_range():
     dm = tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
     omega = -0.3
     opt = int3c2e.SRInt3c2eOpt(cell, auxcell, omega).build()
-    grad, sigma = rhf_stress._get_ejk_derivatives(opt, dm, hermi=1, k_factor=0)
+    grad, sigma = rhf._get_ejk_derivatives(opt, dm, hermi=1, k_factor=0)
     assert abs(grad.sum(axis=0)).max() < 1e-11
 
     disp = 1e-4
@@ -174,7 +173,7 @@ def test_ejk_derivatives_gamma_point_without_long_range():
     omega = -0.3
     k_factor = 1
     opt = int3c2e.SRInt3c2eOpt(cell, auxcell, omega).build()
-    ek, sigma = rhf_stress._get_ejk_derivatives(
+    ek, sigma = rhf._get_ejk_derivatives(
         opt, dm, hermi=1, j_factor=1, k_factor=k_factor, omega=omega,
         exxdiv='ewald')
     assert abs(ek.sum(axis=0)).max() < 1e-11
@@ -241,7 +240,7 @@ def test_ejk_derivatives_gamma_point_with_long_range():
     hermi = 1
     j_factor = 1
     k_factor = 1
-    ek, sigma = rhf_stress._get_ejk_derivatives(
+    ek, sigma = rhf._get_ejk_derivatives(
         opt, dm, hermi, j_factor, k_factor, exxdiv='ewald')
     assert abs(ek.sum(axis=0)).max() < 1e-11
 
@@ -270,7 +269,7 @@ def test_ej_derivatives_kpts_without_long_range():
     dm = cp.asarray(np.linalg.inv(cell.pbc_intor('int1e_ovlp', kpts=kpts))*.5)
     omega = -0.3
     opt = int3c2e.SRInt3c2eOpt(cell, auxcell, omega, kmesh).build()
-    grad, sigma = krhf_stress._get_ejk_derivatives(
+    grad, sigma = krhf._get_ejk_derivatives(
         opt, dm, hermi=1, kpts=kpts, k_factor=0, omega=omega)
     assert abs(grad.sum(axis=0)).max() < 1e-11
 
@@ -300,7 +299,7 @@ def test_ej_derivatives_kpts_with_long_range():
     dm = cp.asarray(np.linalg.inv(cell.pbc_intor('int1e_ovlp', kpts=kpts))*.5)
     omega = -0.3
     opt = int3c2e.SRInt3c2eOpt(cell, auxcell, omega, kmesh).build()
-    grad, sigma = krhf_stress._get_ejk_derivatives(
+    grad, sigma = krhf._get_ejk_derivatives(
         opt, dm, hermi=1, kpts=kpts, k_factor=0)
     assert abs(grad.sum(axis=0)).max() < 1e-11
 
@@ -339,18 +338,18 @@ def test_ejk_derivatives_kpts_without_long_range():
     j_factor = 1
     k_factor = 1
 
-    ejk0, sigma0 = krhf_stress._get_ejk_derivatives(
+    ejk0, sigma0 = krhf._get_ejk_derivatives(
         opt, dm, kpts, hermi=1, j_factor=j_factor, k_factor=k_factor,
         omega=omega, exxdiv='ewald')
     assert abs(ejk0.sum(axis=0)).max() < 2e-11
 
     dm = tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
-    ejk, sigma = krhf_stress._get_ejk_derivatives(
+    ejk, sigma = krhf._get_ejk_derivatives(
         opt, dm, kpts, hermi=1, j_factor=j_factor, k_factor=k_factor,
         omega=omega, exxdiv='ewald')
     assert abs(ejk0 - ejk).max() < 1e-9
     assert abs(sigma0 - sigma).max() < 1e-9
-    ejk, sigma = krhf_stress._get_ejk_derivatives(
+    ejk, sigma = krhf._get_ejk_derivatives(
         opt, dm, kpts, hermi=1, j_factor=j_factor, k_factor=k_factor,
         omega=omega, exxdiv='ewald')
 
@@ -407,7 +406,7 @@ def test_ejk_derivatives_kpts_with_long_range():
     k_factor = 1
 
     dm = tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
-    ejk, sigma = krhf_stress._get_ejk_derivatives(
+    ejk, sigma = krhf._get_ejk_derivatives(
         opt, dm, kpts, hermi=1, j_factor=j_factor, k_factor=k_factor, exxdiv='ewald')
     assert abs(ejk.sum(axis=0)).max() < 1e-11
 
@@ -476,7 +475,7 @@ def test_ejk_derivatives_kpts_with_long_range1():
     k_factor = 1
 
     dm = tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
-    ejk, sigma = krhf_stress._get_ejk_derivatives(
+    ejk, sigma = krhf._get_ejk_derivatives(
         opt, dm, kpts, hermi=1, j_factor=j_factor, k_factor=k_factor)
     assert abs(ejk.sum(axis=0)).max() < 1e-11
 
@@ -524,7 +523,7 @@ def test_uhf_ejk_derivatives_gamma_point_without_long_range():
     dm = contract('spi,sqi->spq', mo_coeff*mo_occ[:,None], mo_coeff)
     omega = -0.3
     opt = int3c2e.SRInt3c2eOpt(cell, auxcell, omega).build()
-    ek, sigma = uhf_stress._get_ejk_derivatives(
+    ek, sigma = uhf._get_ejk_derivatives(
         opt, dm, hermi=1, j_factor=1, k_factor=1, omega=omega,
         exxdiv='ewald')
     assert abs(ek.sum(axis=0)).max() < 1e-11
@@ -563,7 +562,7 @@ def test_uhf_ejk_derivatives_gamma_point_with_long_range():
     hermi = 1
     j_factor = 1
     k_factor = 1
-    ek, sigma = uhf_stress._get_ejk_derivatives(
+    ek, sigma = uhf._get_ejk_derivatives(
         opt, dm, hermi=hermi, j_factor=j_factor, k_factor=k_factor,
         exxdiv='ewald')
     assert abs(ek.sum(axis=0)).max() < 1e-11
@@ -605,13 +604,13 @@ def test_uhf_ejk_derivatives_kpts_without_long_range():
     opt = int3c2e.SRInt3c2eOpt(cell, auxcell, omega, kmesh).build()
     j_factor = 1
     k_factor = 1
-    ejk0, sigma0 = kuhf_stress._get_ejk_derivatives(
+    ejk0, sigma0 = kuhf._get_ejk_derivatives(
         opt, dm, kpts, hermi=1, j_factor=j_factor, k_factor=k_factor,
         omega=omega, exxdiv='ewald')
     assert abs(ejk0.sum(axis=0)).max() < 2e-11
 
     dm = tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
-    ejk, sigma = kuhf_stress._get_ejk_derivatives(
+    ejk, sigma = kuhf._get_ejk_derivatives(
         opt, dm, kpts, hermi=1, j_factor=j_factor, k_factor=k_factor,
         omega=omega, exxdiv='ewald')
     assert abs(ejk0 - ejk).max() < 1e-9
@@ -672,7 +671,7 @@ def test_uhf_ejk_derivatives_kpts_with_long_range():
     j_factor = 1
     k_factor = 1
     dm = tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
-    ejk, sigma = kuhf_stress._get_ejk_derivatives(
+    ejk, sigma = kuhf._get_ejk_derivatives(
         opt, dm, kpts, hermi=1, j_factor=j_factor, k_factor=k_factor,
         exxdiv='ewald')
     assert abs(ejk.sum(axis=0)).max() < 3e-9
@@ -741,7 +740,7 @@ def test_uhf_ejk_derivatives_kpts_with_long_range1():
     j_factor = .5
     k_factor = 1
     dm = tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
-    ejk, sigma = kuhf_stress._get_ejk_derivatives(
+    ejk, sigma = kuhf._get_ejk_derivatives(
         opt, dm, kpts, hermi=1, j_factor=j_factor, k_factor=k_factor)
     assert abs(ejk.sum(axis=0)).max() < 1e-11
 
