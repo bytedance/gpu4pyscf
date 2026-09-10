@@ -257,13 +257,19 @@ class KnownValues(unittest.TestCase):
         dm_auxG = dm.dot(auxG)
         grad = cp.zeros((2, 3))
         sigma = cp.zeros((3, 3))
-        libpbc.PBC_ft_ao_deriv(
+        aux_ft_envs = ft_ao_gpu.RysIntEnvVars.new(
+            ft_opt.cell.natm, ft_opt.cell.nbas, ft_opt.cell._atm,
+            ft_opt.cell._bas, ft_ao_gpu._scale_sp_ctr_coeff(ft_opt.cell),
+            ft_opt.cell.ao_loc)
+        err = libpbc.PBC_ft_ao_deriv(
             ctypes.cast(grad.data.ptr, ctypes.c_void_p),
             ctypes.cast(sigma.data.ptr, ctypes.c_void_p),
+            lib.c_null_ptr(),
             ctypes.cast(dm_auxG.data.ptr, ctypes.c_void_p),
             ctypes.cast(GvT.data.ptr, ctypes.c_void_p),
-            ctypes.byref(ft_opt._aft_envs),
+            ctypes.byref(aux_ft_envs),
             ctypes.c_int(len(Gv)))
+        assert err == 0
 
         grad = grad.get()
         sigma = sigma.get()

@@ -38,6 +38,7 @@ __all__ = [
 ]
 
 libpbc.fill_int2c2e.restype = ctypes.c_int
+libpbc.int2c2e_deriv.restype = ctypes.c_int
 
 def int2c2e(auxcell, kpts=None, bvk_kmesh=None,
             omega=None, lr_factor=None, sr_factor=None):
@@ -360,7 +361,6 @@ class Int2c2eOpt:
         rys_envs = self._rys_envs
         grad = cp.zeros((cell.natm, 3))
         sigma = cp.zeros((3, 3))
-        libpbc.e_int2c2e_ip1.restype = ctypes.c_int
         err = libpbc.int2c2e_deriv(
             ctypes.cast(grad.data.ptr, ctypes.c_void_p),
             ctypes.cast(sigma.data.ptr, ctypes.c_void_p),
@@ -373,5 +373,5 @@ class Int2c2eOpt:
             ctypes.cast(bas_ij_idx.data.ptr, ctypes.c_void_p),
             ctypes.cast(gout_stride.data.ptr, ctypes.c_void_p))
         if err != 0:
-            raise RuntimeError('e_int2c2e_ip1 failed')
+            raise RuntimeError('int2c2e_deriv failed')
         return grad, sigma
