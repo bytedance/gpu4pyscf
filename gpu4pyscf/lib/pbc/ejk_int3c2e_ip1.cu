@@ -392,6 +392,14 @@ void ejk_int3c2e_deriv_kernel(double *ejk, double *ejk_aux, double *sigma,
                               int *head, int sp_blocks, int ksh_blocks)
 {
     int thread_id = threadIdx.x;
+    __shared__ int ksh0_cell0, ksh1_cell0;
+    __shared__ int shl_pair0, shl_pair1;
+    __shared__ int li, lj, lk, nroots, nf;
+    __shared__ int iprim, jprim, kprim;
+    __shared__ int nao;
+    __shared__ int g_size, gout_stride, nst_per_block;
+    __shared__ int num_ijk_tasks;
+    __shared__ int num_sub_tasks, img_not_processed, img_tile_size;
     __shared__ int sp_block_id, ksh_block_id;
     uint32_t *img_pool = pool + blockIdx.x * POOL_SIZE * (MAX_IMGS_PER_TASK+2);
     uint32_t *rem_task_idx = img_pool + POOL_SIZE * MAX_IMGS_PER_TASK;
@@ -423,12 +431,6 @@ while (1) {
     double *env = envs.env;
     double *img_coords = envs.img_coords;
     int nimgs = envs.nimgs;
-    __shared__ int ksh0_cell0, ksh1_cell0;
-    __shared__ int shl_pair0, shl_pair1;
-    __shared__ int li, lj, lk, nroots, nf;
-    __shared__ int iprim, jprim, kprim;
-    __shared__ int nao;
-    __shared__ int g_size, gout_stride, nst_per_block;
     if (thread_id == 0) {
         int bvk_nbas = envs.nbas * ncells;
         shl_pair0 = shl_pair_offsets[sp_block_id];
@@ -473,7 +475,6 @@ while (1) {
     int idx_j = lex_xyz_offset(lj);
     int idx_k = lex_xyz_offset(lk);
 
-    __shared__ int num_ijk_tasks;
     if (thread_id == 0) {
         int nshl_pairs = shl_pair1 - shl_pair0;
         int nksh = ksh1_cell0 - ksh0_cell0;
@@ -487,7 +488,6 @@ while (1) {
     while (num_ijk_tasks > 0) {
     _filter_jk_images(img_pool, rem_task_idx, num_ijk_tasks, ijk_tasks_info,
                       envs, img_idx);
-    __shared__ int num_sub_tasks, img_not_processed, img_tile_size;
     if (thread_id == 0) {
         img_tile_size = 8;
         img_not_processed = MAX_IMGS_PER_TASK;
