@@ -14,6 +14,7 @@
 
 '''Tools for constructing atom-resolved magnetic moments in periodic systems.'''
 
+import numbers
 import cupy as cp
 import numpy as np
 import scipy.linalg
@@ -120,6 +121,7 @@ def _make_atomic_mol(cell, ia, spin):
 
     atm.charge = 0
     atm.spin = spin
+    atm._nelectron = None
     atm.symmetry = False
     atm.enuc = 0
     atm._built = True
@@ -186,10 +188,16 @@ def _get_spin_sad(cell, kpts, magmoms):
                 f'{nelectron} electrons')
         target_spin = min(target_spin, float(nelectron))
 
+        max_spin = min(nelectron, 2 * nao_atm - nelectron)
+        if target_spin > max_spin:
+            raise ValueError(
+                f'Atomic magnetic moment {target_spin} for atom {ia} cannot '
+                f'be represented by {nao_atm} orbitals and {nelectron} electrons')
+
         if nelectron % 2 == 0:
-            spin_states = np.arange(0, nelectron + 1, 2)
+            spin_states = np.arange(0, max_spin + 1, 2)
         else:
-            spin_states = np.append(0, np.arange(1, nelectron + 1, 2))
+            spin_states = np.append(0, np.arange(1, max_spin + 1, 2))
 
         # For non-integer spin, find the closest integer spin states.
         upper_index = np.searchsorted(spin_states, target_spin)
@@ -234,33 +242,114 @@ def get_init_guess_with_magmom(cell, kpts, magmoms_dict, method='spin_sad',
         cell:
             Periodic cell.
         kpts:
-            K-point coordinates with shape ``(nkpts, 3)``.
+            Equally weighted k-point coordinates with shape ``(nkpts, 3)``.
+            A single k-point with shape ``(3,)`` is also accepted.
         magmoms_dict:
-            Mapping from atom indices to local magnetic moments.
+            Mapping from atom indices to finite, real local magnetic moments
+            per primitive cell. Unspecified atoms have zero initial moment.
+            An empty mapping or all-zero moments with no ``dm_init`` preserve
+            the native KUHF initial guess, including its total spin.
         method:
             ``'uniform'``, ``'valence'``, or ``'spin_sad'``.
         key:
             Initial charge-density method used by ``uniform`` and ``valence``.
+        dm_init:
+            Optional CuPy density with shape ``(2, nkpts, nao, nao)`` for
+            ``uniform`` and ``valence``. Its spin-summed density is preserved.
+
+    Nonzero total moments are allowed. In KUHF/KUKS, ``cell.spin`` is the
+    alpha-minus-beta electron count over the entire k-point mesh, not per
+    primitive cell. A matching initial guess therefore requires
+    ``len(kpts) * sum(magmoms_dict.values()) == cell.spin``. A mismatch is
+    logged as a warning: the requested initial moments are retained, and
+    neither ``cell.spin`` nor ``kpts`` is changed. Subsequent SCF occupations
+    follow the SCF object's electron counts, not these initial local moments.
+    Invalid electron-count/spin parity or orbital capacity raises ValueError.
 
     For ``spin_sad``, fractional moments and integer moments incompatible with
     the neutral atom's spin parity are formed by linearly interpolating the
     neighboring allowed isolated-atom spin states. This preserves the atomic
     charge while producing the requested average moment. All-electron,
-    molecular ECP, and GTH pseudopotential cells are supported.
+    molecular ECP, and GTH pseudopotential cells are supported. The polarized
+    ``spin_sad`` construction requires a neutral cell; use ``uniform`` or
+    ``valence`` for a charged cell.
     '''
 
+    if not isinstance(method, str):
+        raise TypeError('method must be a string')
     method = method.lower()
-    assert method in ('uniform', 'valence', 'spin_sad')
-    assert isinstance(magmoms_dict, dict)
+    if method not in ('uniform', 'valence', 'spin_sad'):
+        raise ValueError(f'Unknown magnetic-moment initial guess method {method!r}')
+    if not isinstance(magmoms_dict, dict):
+        raise TypeError('magmoms_dict must be a dict of atom indices and moments')
     magmoms = magmoms_dict
 
-    kpts = kpts.reshape(-1, 3)
+    kpts = np.asarray(kpts)
+    if kpts.shape == (3,):
+        kpts = kpts.reshape(1, 3)
+    if kpts.ndim != 2 or kpts.shape[1] != 3 or len(kpts) == 0:
+        raise ValueError('kpts must have shape (nkpts, 3) with nkpts > 0')
+    if (not np.issubdtype(kpts.dtype, np.number) or np.iscomplexobj(kpts) or
+            not np.isfinite(kpts).all()):
+        raise ValueError('kpts must contain only finite real coordinates')
+
+    for ia, magmom in magmoms.items():
+        if isinstance(ia, (bool, np.bool_)) or not isinstance(ia, numbers.Integral):
+            raise TypeError(f'Atom index {ia!r} must be an integer')
+        if not 0 <= ia < cell.natm:
+            raise IndexError(f'Atom index {ia} is outside [0, {cell.natm})')
+        if (isinstance(magmom, (bool, np.bool_)) or
+                not isinstance(magmom, numbers.Real)):
+            raise TypeError(f'Magnetic moment for atom {ia} must be a real number')
+        if not np.isfinite(magmom):
+            raise ValueError(f'Magnetic moment for atom {ia} must be finite')
+
+    nkpts = len(kpts)
+    nelectron = cell.tot_electrons(nkpts)
+    spin = cell.spin
+    if (isinstance(spin, (bool, np.bool_)) or
+            not isinstance(spin, numbers.Integral)):
+        raise ValueError('cell.spin must be an integer')
+    if abs(spin) > nelectron or (nelectron + spin) % 2:
+        raise ValueError(
+            f'cell.spin={spin} is incompatible with {nelectron} electrons '
+            f'over {nkpts} k-points')
+    nao = cell.nao_nr()
+    if (nelectron + abs(spin)) / 2 > nkpts * nao:
+        raise ValueError('cell.spin exceeds the available orbital capacity')
+
+    if dm_init is not None:
+        if method == 'spin_sad':
+            raise ValueError('dm_init is only supported by uniform and valence')
+        if not isinstance(dm_init, cp.ndarray):
+            raise TypeError('dm_init must be a CuPy ndarray')
+        if dm_init.shape != (2, nkpts, nao, nao):
+            raise ValueError(
+                f'dm_init must have shape (2, {nkpts}, {nao}, {nao})')
+        if not cp.isfinite(dm_init).all():
+            raise ValueError('dm_init must contain only finite values')
 
     # Preserve the native initial guess exactly when no spin polarization was
     # requested. In particular, keep any tagged orbital information.
-    if not any(magmoms.values()):
+    if not any(magmoms.values()) and dm_init is None:
         from gpu4pyscf.pbc.scf.kuhf import KUHF
         return KUHF(cell, kpts=kpts).get_init_guess(key=key)
+
+    if (method == 'spin_sad' and
+            nelectron != cell.atom_charges().sum() * nkpts):
+        raise ValueError(
+            'spin_sad requires a neutral cell; use uniform or valence '
+            'for a charged cell')
+
+    total_magmom = sum(magmoms.values())
+    if abs(total_magmom) > nelectron / nkpts + 1e-9:
+        raise ValueError('Total magnetic moment exceeds the number of electrons')
+    if not np.isclose(total_magmom * nkpts, spin, atol=1e-9, rtol=0):
+        logger.warn(
+            cell, 'Initial magnetic moment per cell %g times %d k-points '
+            'does not match cell.spin=%g. The requested initial moments are '
+            'retained; SCF occupations will follow the SCF electron counts.',
+            total_magmom, nkpts, spin)
 
     if method == 'spin_sad':
         return _get_spin_sad(cell, kpts, magmoms)
