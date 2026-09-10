@@ -218,7 +218,7 @@ class KnownValues(unittest.TestCase):
         assert abs(dat1 - dat2).max() < 1e-6
 
         mf_scanner = mf.as_scanner()
-        _check_vs_finite_diff(dat, mf_scanner)
+        _check_vs_finite_diff(dat2, mf_scanner)
 
     @unittest.skipIf(num_devices > 1, '')
     def test_mgga_vs_finite_difference(self):

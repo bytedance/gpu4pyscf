@@ -437,7 +437,7 @@ class KnownValues(unittest.TestCase):
         ]
         kpts = cell.make_kpts([2,1,1])
         mf0 = cell.KRKS(xc='pbe0', kpts=kpts).to_gpu()
-        mf = mf.density_fit(auxbasis=auxbasis).multigrid_numint()
+        mf = mf0.density_fit(auxbasis=auxbasis).multigrid_numint()
         mf.run()
         self.assertAlmostEqual(mf.e_tot, -0.4498648935239443, 8)
 
