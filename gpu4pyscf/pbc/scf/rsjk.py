@@ -1190,6 +1190,7 @@ class PBCJKMatrixOpt:
                     vG *= wcoulG_SR[p0:p1]
                     err = kern(
                         ctypes.cast(ej.data.ptr, ctypes.c_void_p),
+                        ctypes.cast(sigma.data.ptr, ctypes.c_void_p),
                         ctypes.cast(dms_bvkcell.data.ptr, ctypes.c_void_p),
                         ctypes.cast(vG.data.ptr, ctypes.c_void_p),
                         ctypes.cast(GvT.data.ptr, ctypes.c_void_p),
