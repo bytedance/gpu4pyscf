@@ -420,8 +420,6 @@ class SRInt3c2eOpt:
             self.build()
 
         cell = self.cell
-        assert all(cp.asnumpy(cell.recontract_coef) == 1.), \
-                'int3c2e for general-contraction basis not supported'
         auxcell = self.auxcell
         bvk_ncells = np.prod(self.bvk_kmesh)
 
@@ -435,8 +433,6 @@ class SRInt3c2eOpt:
                 self.bas_ij_cache, 1000000)
         else:
             bas_ij_idx, batched_shl_pair_offsets = bas_ij_aggregated
-        img_idx = cp.asarray(self.img_idx)
-        img_offsets = cp.asarray(self.img_offsets)
 
         # For each primitive shell-pair in bas_ij_idx, ao_pair_loc points to the
         # addresses of first element for the contracted pair-GTOs. In each
@@ -481,6 +477,8 @@ class SRInt3c2eOpt:
         task_pool = empty_aligned((workers, POOL_SIZE*16), np.int32, alignment=128)
         c2s_pool = cp.empty((workers, THREADS*GOUT_WIDTH))
         int3c2e_envs = self.int3c2e_envs
+        img_idx = cp.asarray(self.img_idx)
+        img_offsets = cp.asarray(self.img_offsets)
         kern = libpbc.PBCsr_int3c2e_latsum23
 
         def evaluate_j3c(shl_pair_batch_id=0, aux_batch_id=0, out=None):

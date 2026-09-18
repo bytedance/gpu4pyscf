@@ -679,8 +679,10 @@ def compressed_cderi_kk(cell, auxcell, kpts, kmesh=None, omega=None,
         multi_gpu.synchronize()
 
     if not exclude_dd:
+        t1 = log.timer_debug1(f'compact part of GDF tensor', *t0)
         cderi_idx = _append_dd_cderi(
             int3c2e_opt, cderi, cd_j2c_cache, cderi_idx, cderi_dd_idx, omega, uniq_kpts)
+        t1 = log.timer_debug1(f'diffuse part of GDF tensor', *t1)
 
     cderip = None
     if negative_metric_size:

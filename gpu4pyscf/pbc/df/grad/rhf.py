@@ -24,8 +24,7 @@ import cupy as cp
 from pyscf import lib
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.cupy_helper import (
-    contract, asarray, ndarray, transpose_sum, get_avail_mem, empty_aligned,
-    copy_symmetric)
+    contract, asarray, ndarray, transpose_sum, get_avail_mem, empty_aligned)
 from gpu4pyscf.lib.utils import nearest_power2
 from gpu4pyscf.df.int3c2e_bdiv import _split_l_ctr_pattern, get_ao_pair_loc
 from gpu4pyscf.df.grad.rhf import factorize_dm
@@ -372,12 +371,12 @@ def _get_ejk_derivatives(int3c2e_opt, dm, hermi=0, j_factor=1., k_factor=1.,
 
             pqG_compressed = eval_ft(Gv[p0:p1], out=buf)
             dm_vG_compressed[diag_idx] *= .5
-            vG = cp.einsum('rg,rg->g', pqG_compressed[:n_compact_pairs],
-                           dm_vG_compressed[:n_compact_pairs]).real
+            vG = contract('rg,rg->g', pqG_compressed[:n_compact_pairs],
+                          dm_vG_compressed[:n_compact_pairs]).real
             sigma_G += 2 * cp.einsum('g,xyg->xy', vG, wcoulG_LR1[:,:,p0:p1])
             if separated_dd:
-                vG = cp.einsum('rg,rg->g', pqG_compressed[n_compact_pairs:],
-                               dm_vG_compressed[n_compact_pairs:]).real
+                vG = contract('rg,rg->g', pqG_compressed[n_compact_pairs:],
+                              dm_vG_compressed[n_compact_pairs:]).real
                 sigma_G += 2 * cp.einsum('g,xyg->xy', vG, wcoulG_FR1[:,:,p0:p1])
 
             # (ij|r)^{[0]} * metric * (r|G)^{[1]} (ji|G)^{[0]}
@@ -394,7 +393,7 @@ def _get_ejk_derivatives(int3c2e_opt, dm, hermi=0, j_factor=1., k_factor=1.,
             beta = 0
             dm_auxG = ndarray((naux,nGv*2), buffer=buf2)
             if j_factor != 0:
-                rhoGz = cp.einsum('pqG,qp->G', pqGw, dm_sorted)
+                rhoGz = contract('pqG,qp->G', pqGw, dm_sorted)
                 cp.multiply(auxvec[:,None], rhoGz, out=dm_auxG)
                 beta = j_factor
             # einsum('pqG,pi,qj,rij,Gx,rG->rx', pqGw, c, c, dm_oo, 1j*Gv, conj(auxG))
@@ -411,7 +410,7 @@ def _get_ejk_derivatives(int3c2e_opt, dm, hermi=0, j_factor=1., k_factor=1.,
             # = -(ji|r)^{[0]} * metric * (r|G)^{[1]} (G|s)^{[0]} * metric * (ij|s)^{[0]}
             dm_auxG1 = contract('sr,sG->rG', dm_aux, auxG.view(np.float64),
                                 out=ndarray((naux,nGv*2), buffer=buf)).view(np.complex128)
-            vG = cp.einsum('rg,rg->g', dm_auxG1, auxG.conj()).real
+            vG = contract('rg,rg->g', dm_auxG1, auxG.conj()).real
             sigma_G -= .5 * cp.einsum('g,xyg->xy', vG, wcoulG_LR1[:,:,p0:p1])
 
             dm_auxG1 *= wcoulG_LR0[p0:p1]
