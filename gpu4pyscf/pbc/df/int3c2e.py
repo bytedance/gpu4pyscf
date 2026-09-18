@@ -229,7 +229,8 @@ class SRInt3c2eOpt:
         With separate_dd=True, the SR evaluator contains only compact pairs;
         dd_ft_opt holds the complementary Fourier-transform pair list.
         """
-        cell = self.cell = SortedCell.from_cell(self.cell)
+        cell = self.cell = SortedCell.from_cell(
+            self.cell, decontract=True, diffuse_cutoff=0.15)
         assert cell.uniq_l_ctr[:,0].max() <= LMAX
         auxcell = self.auxcell = SortedCell.from_cell(self.auxcell)
         assert auxcell.uniq_l_ctr[:,0].max() <= L_AUX_MAX
