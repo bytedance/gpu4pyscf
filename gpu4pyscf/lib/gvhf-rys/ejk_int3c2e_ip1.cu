@@ -502,11 +502,13 @@ void ejk_int3c2e_ip1_kernel(double *ejk, double *ejk_aux,
             int expk = bas[ksh*BAS_SLOTS+PTR_EXP];
             int ck = bas[ksh*BAS_SLOTS+PTR_COEFF];
             int rk = bas[ksh*BAS_SLOTS+PTR_BAS_COORD];
-            int k0, dm_tensor;
+            int k0, dm_tensor = 0;
             if (density_auxvec == NULL) {
-                int k0 = envs.ao_loc[ksh0] - nao - aux_offset + ksh - ksh0;
-                size_t pair_offset = ao_pair_loc[pair_ij];
-                dm_tensor = pair_offset * naux + k0;
+                if (pair_ij < shl_pair1 && kidx < ksh1) {
+                    int k0 = envs.ao_loc[ksh0] - nao - aux_offset + ksh - ksh0;
+                    size_t pair_offset = ao_pair_loc[pair_ij];
+                    dm_tensor = pair_offset * naux + k0;
+                }
             } else {
                 int i0 = envs.ao_loc[ish];
                 int j0 = envs.ao_loc[jsh];
@@ -770,7 +772,8 @@ int ejk_int3c2e_ip1(double *ejk, double *ejk_aux,
     size_t nao2 = nao * nao;
     for (int n = 0; n < n_dm; n += DM_BLOCK) {
         ejk_int3c2e_ip1_kernel<<<blocks, THREADS, shm_size>>>(
-                ejk+n*natm*3, ejk_aux+n*natm*3, dm, density_auxvec, n_dm-n,
+                ejk+n*natm*3, ejk_aux ? ejk_aux+n*natm*3 : NULL,
+                dm, density_auxvec, n_dm-n,
                 omega, lr_factor, sr_factor, *envs,
                 shl_pair_offsets, bas_ij_idx, ksh_offsets, gout_stride_lookup,
                 ao_pair_loc, aux_offset, npairs, naux);
