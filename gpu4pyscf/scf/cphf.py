@@ -28,12 +28,17 @@ from gpu4pyscf.lib import logger
 
 def solve(fvind, mo_energy, mo_occ, h1, s1=None,
           max_cycle=50, tol=1e-7, hermi=False, verbose=logger.WARN,
-          level_shift=0, mo10=None):
+          level_shift=0, mo10=None, scalar_field=None):
     '''
     Args:
         fvind : function
             Given density matrix, compute (ij|kl)D_{lk}*2 - (ij|kl)D_{jk}
     Kwargs:
+        scalar_field : 'real', 'complex', or None
+            Select the response action's scalar field. Complex inputs require
+            an explicit choice. Use 'real' for a Hermitian density variation
+            depending on mo1 and mo1.conj(); 'complex' for complex-linear
+            responses. None preserves behavior for real inputs.
         hermi : boolean
             Whether the matrix defined by fvind is Hermitian or not.
         mo10 : ndarray
@@ -43,18 +48,21 @@ def solve(fvind, mo_energy, mo_occ, h1, s1=None,
     if s1 is None:
         return solve_nos1(fvind, mo_energy, mo_occ, h1,
                           max_cycle, tol, hermi, verbose, 
-                          level_shift=level_shift, mo10=mo10)
+                          level_shift=level_shift, mo10=mo10,
+                          scalar_field=scalar_field)
     else:
         return solve_withs1(fvind, mo_energy, mo_occ, h1, s1,
                             max_cycle, tol, hermi, verbose, 
-                            level_shift=level_shift, mo10=mo10)
+                            level_shift=level_shift, mo10=mo10,
+                            scalar_field=scalar_field)
 kernel = solve
 
 # h1 shape is (:,nvir,nocc)
 def solve_nos1(fvind, mo_energy, mo_occ, h1,
                max_cycle=20, tol=1e-9, hermi=False, verbose=logger.WARN,
-               level_shift=0, mo10=None):
-    '''For field independent basis. First order overlap matrix is zero'''
+               level_shift=0, mo10=None, scalar_field=None):
+    '''For field independent basis. First order overlap matrix is zero.
+    scalar_field follows solve and must be specified for complex inputs.'''
     log = logger.new_logger(verbose=verbose)
     t0 = log.init_timer()
 
@@ -75,15 +83,16 @@ def solve_nos1(fvind, mo_energy, mo_occ, h1,
     lindep = max(tol**2, numpy.finfo(mo1base.real.dtype).eps)
     mo1 = krylov(vind_vo, mo1base.reshape(-1,nvir*nocc), x0=x0,
                  tol=tol, max_cycle=max_cycle, lindep=lindep,
-                 hermi=hermi, verbose=log)
+                 hermi=hermi, verbose=log, scalar_field=scalar_field)
     log.timer('krylov solver in CPHF', *t0)
     return mo1.reshape(h1.shape), None
 
 # h1 shape is (:,nocc+nvir,nocc)
 def solve_withs1(fvind, mo_energy, mo_occ, h1, s1,
                 max_cycle=50, tol=1e-9, hermi=False,
-                verbose=logger.WARN, level_shift=0, mo10=None):
+                verbose=logger.WARN, level_shift=0, mo10=None, scalar_field=None):
     '''For field dependent basis. First order overlap matrix is non-zero.
+    scalar_field follows solve and must be specified for complex inputs.
     The first order orbitals are set to
     C^1_{ij} = -1/2 S1
     e1 = h1 - s1*e0 + (e0_j-e0_i)*c1 + vhf[c1]
@@ -127,7 +136,7 @@ def solve_withs1(fvind, mo_energy, mo_occ, h1, s1,
     lindep = max(tol**2, numpy.finfo(mo1base.real.dtype).eps)
     mo1 = krylov(vind_vo, mo1base.reshape(-1,nmo*nocc), x0=x0,
                  tol=tol, max_cycle=max_cycle, lindep=lindep,
-                 hermi=hermi, verbose=log)
+                 hermi=hermi, verbose=log, scalar_field=scalar_field)
     mo1 = mo1.reshape(mo1base.shape)
     mo1[:,occidx] = mo1base[:,occidx]
     log.timer('krylov solver in CPHF', *t0)
