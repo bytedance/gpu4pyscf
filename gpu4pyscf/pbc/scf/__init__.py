@@ -17,6 +17,7 @@
 
 from .import hf
 from . import uhf
+from . import rohf
 from . import khf
 from . import kuhf
 from . import ghf
@@ -41,22 +42,20 @@ def RHF(cell, *args, **kwargs):
     if cell.spin == 0:
         return rhf.RHF(cell, *args, **kwargs)
     else:
-        raise NotImplementedError
+        return rohf.ROHF(cell, *args, **kwargs)
 
 def UHF(cell, *args, **kwargs):
     if 'kpts' in kwargs:
         return KUHF(cell, *args, **kwargs)
     return uhf.UHF(cell, *args, **kwargs)
 
+def ROHF(cell, *args, **kwargs):
+    if 'kpts' in kwargs:
+        raise NotImplementedError
+    return rohf.ROHF(cell, *args, **kwargs)
+
 def HF(cell, *args, **kwargs):
     if cell.spin == 0:
         return RHF(cell, *args, **kwargs)
     else:
         return UHF(cell, *args, **kwargs)
-
-def KHF(cell, *args, **kwargs):
-    '''K-point HF, restricted for spin zero and unrestricted otherwise.'''
-    if cell.spin == 0:
-        return KRHF(cell, *args, **kwargs)
-    else:
-        return KUHF(cell, *args, **kwargs)

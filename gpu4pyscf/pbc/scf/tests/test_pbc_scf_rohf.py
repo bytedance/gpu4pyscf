@@ -1,0 +1,136 @@
+# Copyright 2026 The PySCF Developers. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import unittest
+import numpy as np
+import cupy as cp
+from pyscf import lib
+from pyscf.pbc import gto as pbcgto
+from gpu4pyscf.pbc import scf as pscf
+from gpu4pyscf.pbc.scf.rsjk import PBCJKMatrixOpt
+from gpu4pyscf.pbc.scf.j_engine import PBCJMatrixOpt
+
+def setUpModule():
+    global cell
+    L = 4
+    cell = pbcgto.Cell()
+    cell.build(unit = 'B',
+               verbose = 7,
+            #    output = '/dev/null',
+               precision = 1e-9,
+               a = ((L,0,0),(0,L,0),(0,0,L)),
+               atom = [['He', (L/2.-.5,L/2.,L/2.-.5)],
+                       ['He', (L/2.   ,L/2.,L/2.+.5)]],
+               basis = { 'He': [[0, (0.8, 1.0)],
+                                [0, (1.0, 1.0)],
+                                [0, (1.2, 1.0)]]},
+               spin = 2)
+
+def tearDownModule():
+    global cell
+    cell.stdout.close()
+    del cell
+
+class KnownValues(unittest.TestCase):
+    def test_small_system(self):
+        mol = pbcgto.Cell(
+            atom='H 0 0 0;',
+            a=[[3, 0, 0], [0, 3, 0], [0, 0, 3]],
+            basis=[[0, [1, 1]]],
+            spin=1,
+            verbose=7,
+            # output='/dev/null'
+        )
+        mf = pscf.ROHF(mol).run()
+        self.assertAlmostEqual(mf.e_tot, -0.10439957733770433, 8)
+
+        mol = pbcgto.Cell(
+            atom='He 0 0 0;',
+            a=[[3, 0, 0], [0, 3, 0], [0, 0, 3]],
+            basis=[[0, [1, 1]]],
+            verbose=7,
+            # output='/dev/null'
+        )
+        mf = pscf.ROHF(mol).run()
+        self.assertAlmostEqual(mf.e_tot, -2.2719576422087813, 8)
+
+    def test_density_fit(self):
+        from gpu4pyscf.pbc.df.df import GDF
+        L = 4.
+        cell = pbcgto.Cell()
+        cell.a = np.eye(3)*L
+        cell.atom =[['H' , ( L/2+0., L/2+0. ,   L/2+1.)],
+                    ['H' , ( L/2+1., L/2+0. ,   L/2+1.)]]
+        cell.basis = [[0, (4.0, 1.0)], [0, (1.0, 1.0)]]
+        cell.spin = 2
+        cell.build()
+
+        ref = cell.ROHF().density_fit().run()
+        mf = ref.to_gpu().run(conv_tol=1e-8)
+        self.assertTrue(isinstance(mf.with_df, GDF))
+        self.assertAlmostEqual(ref.e_tot, -0.11995733902879796, 8)
+        self.assertAlmostEqual(mf.e_tot, ref.e_tot, 8)
+
+    def test_rsjk(self):
+        L = 4.
+        cell = pbcgto.Cell()
+        cell.a = np.eye(3)*L
+        cell.atom =[['H' , ( L/2+0., L/2+0. ,   L/2+1.)],
+                    ['H' , ( L/2+1., L/2+0. ,   L/2+1.)]]
+        cell.basis = [[0, (4.0, 1.0)], [0, (1.0, 1.0)]]
+        cell.build()
+
+        ref = -0.3698952496731241
+        mf = cell.ROHF().to_gpu()
+        mf.rsjk = PBCJKMatrixOpt(cell)
+        mf.j_engine = PBCJMatrixOpt(cell)
+        mf.run(conv_tol=1e-8)
+        self.assertAlmostEqual(mf.e_tot, ref, 8)
+
+    def test_rsjk_with_df(self):
+        ref = cell.ROHF(exxdiv='ewald').to_gpu().run()
+        mf = cell.ROHF(exxdiv='ewald').to_gpu().density_fit()
+        mf.rsjk = PBCJKMatrixOpt(cell)
+        mf.j_engine = PBCJMatrixOpt(cell)
+        mf.run()
+        self.assertAlmostEqual(mf.e_tot, ref.e_tot, 6)
+        self.assertAlmostEqual(mf.e_tot, -3.9534222787378726, 6)
+
+    def test_initial_guess_tag(self):
+        mf = cell.UHF().to_gpu()
+        s = mf.get_ovlp()
+
+        dm = mf.get_init_guess(key='minao', s1e=s)
+        assert hasattr(dm, 'mo_coeff') and dm.mo_coeff.ndim == 3
+        assert abs(cp.einsum('nij,ji->n', dm, s).get() - (3, 1)).max() < 1e-6
+
+        dm = mf.get_init_guess(key='hcore', s1e=s)
+        assert hasattr(dm, 'mo_coeff') and dm.mo_coeff.ndim == 3
+        assert abs(cp.einsum('nij,ji->n', dm, s).get() - (3, 1)).max() < 1e-6
+
+        dm = mf.get_init_guess(key='atom', s1e=s)
+        assert hasattr(dm, 'mo_coeff') and dm.mo_coeff.ndim == 3
+        assert abs(cp.einsum('nij,ji->n', dm, s).get() - (3, 1)).max() < 1e-6
+
+        dm = mf.get_init_guess(key='huckel', s1e=s)
+        assert hasattr(dm, 'mo_coeff') and dm.mo_coeff.ndim == 3
+        assert abs(cp.einsum('nij,ji->n', dm, s).get() - (3, 1)).max() < 1e-6
+
+        dm = mf.get_init_guess(key='mod_huckel', s1e=s)
+        assert hasattr(dm, 'mo_coeff') and dm.mo_coeff.ndim == 3
+        assert abs(cp.einsum('nij,ji->n', dm, s).get() - (3, 1)).max() < 1e-6
+
+if __name__ == "__main__":
+    print("Full Tests for PBC ROHF")
+    unittest.main()
