@@ -8,7 +8,7 @@ start_wall = time.perf_counter()
 from pyscf import gto, scf, lo, lib
 import cupy as cp
 from pyscf.data.elements import chemcore
-from gpu4pyscf.lno import LNOCCSD
+from gpu4pyscf.cc.lnoccsd import LNOCCSD
 
 # Calculation settings
 BASIS = 'cc-pvdz'

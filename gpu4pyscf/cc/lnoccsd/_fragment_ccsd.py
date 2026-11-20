@@ -1,6 +1,6 @@
 """GPU restricted CCSD solver for a single LNO local active space.
 
-The fragment driver lives in :mod:`gpu4pyscf.lno.bridge`.  The solver
+The fragment driver lives in :mod:`gpu4pyscf.cc.lnoccsd.lnoccsd`.  The solver
 receives precomputed real RHF MO integrals, initial MP2 amplitudes, and
 returns the converged amplitudes to the PySCF-forge fragment projector.
 No command-line interface or molecule-wide CCSD driver is defined here.
@@ -40,12 +40,12 @@ def _pair_indices(n):
     return pairs
 
 
-class RestrictedCCSD:
+class _RestrictedCCSD:
     """Restricted CCSD equations for one LNO fragment's active LAS.
 
     This is a subsystem solver, not the full-molecule LNO-CCSD driver.
     The orbital and integral tensors refer exclusively to the active LAS.
-    The driver in bridge.LNOCCSD constructs fragments and projects their
+    The driver in lnoccsd.LNOCCSD constructs fragments and projects their
     correlation contributions onto the localized occupied orbitals.
     """
     def __init__(self, fixed: FixedLAS, level_shift=0.0):
@@ -369,13 +369,13 @@ def solve(fixed: FixedLAS, t1_init, t2_init, *, conv_tol=1e-9,
     Returns:
         (e_corr, t1_host, t2_host, diagnostics).  ``e_corr`` is the
         *unprojected* CCSD energy within this LAS; the LNO fragment energy
-        projection is performed in bridge.LNOCCSD.impurity_solve.
+        projection is performed in lnoccsd.LNOCCSD.impurity_solve.
     """
     no, nv = fixed.nocc, fixed.nvir
     if np.shape(t1_init) != (no, nv) or np.shape(t2_init) != (no, no, nv, nv):
         raise ValueError('Initial MP2 amplitudes do not match the LAS dimensions')
     tic = time.perf_counter()
-    cc = RestrictedCCSD(fixed, level_shift=level_shift)
+    cc = _RestrictedCCSD(fixed, level_shift=level_shift)
     t1 = cp.asarray(t1_init, dtype=cp.float64).copy()
     t2 = cp.asarray(t2_init, dtype=cp.float64).copy()
     cp.cuda.get_current_stream().synchronize()

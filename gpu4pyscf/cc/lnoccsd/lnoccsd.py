@@ -15,10 +15,9 @@ from pyscf import lib
 from pyscf.lib import logger
 from pyscf.lno import lnoccsd as forge_lnoccsd
 
-from .solver import FixedLAS, solve
-from .ao2mo import fragment_ao2mo
-from .global_ovl import build_global_eris
-from .mp2_rdm import make_one_hole_density_pair
+from ._fragment_ccsd import FixedLAS, solve
+from .ao2mo import fragment_ao2mo, build_global_eris
+from .make_lno_rdm1 import make_one_hole_density_pair
 
 
 _REQUIRED_BLOCKS = ('oooo','ovoo','ovov','ovvo','oovv','ovvv')
@@ -127,7 +126,7 @@ class LNOCCSD(forge_lnoccsd.LNOCCSD):
         eri_mode: 'full' stores packed LAS vvvv; 'df' keeps LAS vvL.
 
     The object runs the complete molecular LNO-CCSD workflow with kernel().
-    Each active fragment is solved by solver.RestrictedCCSD; the molecular
+    Each active fragment is solved by _fragment_ccsd._RestrictedCCSD; the molecular
     result is the sum of PySCF-forge-projected fragment correlation energies.
     Only real, molecular, closed-shell RHF and CCSD (not CCSD(T)) are supported.
     """

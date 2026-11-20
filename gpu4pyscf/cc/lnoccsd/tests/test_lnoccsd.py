@@ -9,20 +9,15 @@ pytest.importorskip('pyscf.lno')  # LNO-CCSD is provided by PySCF-forge.
 
 from pyscf import gto, scf
 from pyscf.lno import lnoccsd as forge_lnoccsd
-from gpu4pyscf.lno.ao2mo import fragment_ao2mo, compare_eri_objects
-from gpu4pyscf.lno.bridge import _fixed_from_live_eris
-from gpu4pyscf.lno.global_ovl import build_global_eris, compare_global_eris
-from gpu4pyscf.lno.mp2_rdm import make_one_hole_density_pair
-from gpu4pyscf.lno.solver import solve
+from gpu4pyscf.cc.lnoccsd.ao2mo import (build_global_eris, compare_global_eris,
+                                        fragment_ao2mo, compare_eri_objects)
+from gpu4pyscf.cc.lnoccsd.lnoccsd import _fixed_from_live_eris
+from gpu4pyscf.cc.lnoccsd.make_lno_rdm1 import make_one_hole_density_pair
+from gpu4pyscf.cc.lnoccsd._fragment_ccsd import solve
 
 
 @pytest.fixture(scope='module')
 def reference():
-    try:
-        if cp.cuda.runtime.getDeviceCount() == 0:
-            pytest.skip('GPU required for numerical LNO tests')
-    except cp.cuda.runtime.CUDARuntimeError:
-        pytest.skip('CUDA runtime unavailable')
     mol = gto.M(atom='O 0 0 0; H 0 0 0.96; H 0.92 0 -0.24',
                 basis='sto-3g', verbose=0)
     mf = scf.RHF(mol).density_fit()
