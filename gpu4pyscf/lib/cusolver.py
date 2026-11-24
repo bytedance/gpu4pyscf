@@ -165,17 +165,35 @@ for _name in ('Dsyevd', 'Zheevd'):
 
 # hipSOLVER's Dn eigensolvers (syevd/heevd) leave the *shared* cusolver handle
 # in a state that makes cupy's own subsequent cusolver calls (e.g.
-# cupy.linalg.solve -> getrs) fail with rocblas_status_memory_error. syevd below,
-# and eigh (sygvd/hegvd) on HIP, therefore use their own dedicated handle and
-# never touch cupy's shared handle. (eigh keeps cupy's handle on CUDA, where
-# eigh_std routes to cupy.linalg.eigh and syevd is unused.)
+# cupy.linalg.solve -> getrs) fail with rocblas_status_memory_error. syevd below
+# therefore uses its own dedicated handle and never touches cupy's shared handle.
+# (Irrelevant on CUDA, where eigh_std routes to cupy.linalg.eigh and syevd is
+# unused.)
 _dn('Create').restype = int
 _dn('Create').argtypes = [ctypes.c_void_p]
 _dn('SetStream').restype = int
 _dn('SetStream').argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-_dn_handle = ctypes.c_void_p()
-if _dn('Create')(ctypes.byref(_dn_handle)) != 0:
-    raise RuntimeError('failed to create dedicated cusolver handle')
+if BACKEND == 'hip':
+    # HIP still uses one global handle bound to the device active at import.
+    # Unlike CUDA's per-device, per-thread handles, this does not support
+    # multi-device execution or concurrent calls from multiple threads.
+    # Operations on its previous stream must finish before switching streams.
+    _dn_handle = ctypes.c_void_p()
+    if _dn('Create')(ctypes.byref(_dn_handle)) != 0:
+        raise RuntimeError('failed to create dedicated cusolver handle')
+
+
+def _get_handle():
+    stream = cupy.cuda.get_current_stream().ptr
+    if BACKEND != 'hip':
+        handle = device.get_cusolver_handle()
+        cusolver.setStream(handle, stream)
+        return handle
+
+    handle = _dn_handle
+    if _dn('SetStream')(handle, ctypes.c_void_p(stream)) != 0:
+        raise RuntimeError('failed to set dedicated cusolver stream')
+    return handle
 
 
 def eigh(h, s, overwrite=False):
@@ -196,12 +214,7 @@ def eigh(h, s, overwrite=False):
     else:
         A = h.copy()
         B = s.copy()
-    if BACKEND == 'hip':
-        _handle = _dn_handle
-        _dn('SetStream')(_handle, ctypes.c_void_p(cupy.cuda.get_current_stream().ptr))
-    else:
-        _handle = device.get_cusolver_handle()
-        cusolver.setStream(_handle, cupy.cuda.get_current_stream().ptr)
+    _handle = _get_handle()
     w = cupy.zeros(n)
 
     # TODO: reuse workspace
@@ -285,8 +298,7 @@ def syevd(a, overwrite=False):
         A = a
     else:
         A = a.copy()
-    _handle = _dn_handle
-    _dn('SetStream')(_handle, ctypes.c_void_p(cupy.cuda.get_current_stream().ptr))
+    _handle = _get_handle()
     w = cupy.zeros(n)
 
     if a.dtype == np.float64:

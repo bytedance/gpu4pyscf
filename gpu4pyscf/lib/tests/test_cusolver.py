@@ -16,7 +16,10 @@ import pytest
 import numpy as np
 import scipy.linalg
 import cupy as cp
-from gpu4pyscf.lib.cusolver import eigh, cholesky, LinAlgError
+from gpu4pyscf import BACKEND
+from gpu4pyscf.lib.cusolver import eigh, syevd, cholesky, LinAlgError
+from gpu4pyscf.lib.multi_gpu import num_devices
+
 
 def test_eigh_real():
     np.random.seed(6)
@@ -98,3 +101,17 @@ def test_eigh_overwrite(dtype, overwrite):
         np.testing.assert_array_equal(s_gpu.get(), s)
     elif dtype == np.float64:
         assert vectors.data.ptr == h_gpu.data.ptr
+
+@pytest.mark.parametrize('solver', [eigh, syevd])
+@pytest.mark.skipif(BACKEND == 'hip', reason='HIP uses a single-device global handle')
+@pytest.mark.skipif(num_devices < 2, reason='requires two GPUs')
+def test_eigh_multiple_devices(solver):
+    # Import on the default device, then solve on another device and switch back.
+    for device_id in (1, 0):
+        with cp.cuda.Device(device_id):
+            a = cp.asarray([[2., 1.], [1., 2.]])
+            args = (a, cp.eye(2)) if solver is eigh else (a,)
+            values, vectors = solver(*args)
+            np.testing.assert_allclose(values.get(), [1., 3.], atol=1e-12)
+            np.testing.assert_allclose((a @ vectors).get(),
+                                       (vectors * values).get(), atol=1e-12)
