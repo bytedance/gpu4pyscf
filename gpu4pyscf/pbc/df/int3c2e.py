@@ -935,7 +935,26 @@ def _create_pair_recontractor(cell, bas_ij_batches, cart, bvk_ncells=1, on_gpu=F
     With on_gpu=True, create device metadata and return a GPU recontractor
     for contiguous float64 or complex128 arrays on the current device.
     '''
-    # GPU metadata belongs to the current device; calls use its current stream.
+    recontraction_params, pair_addresses = _pair_recontraction_info(
+        cell, bas_ij_batches, cart, bvk_ncells)
+
+    def recontract(batch_id, cderi, j3c, pair_start=0):
+        return _recontract_cderi(cderi, j3c, recontraction_params[batch_id], pair_start)
+
+    if not on_gpu:
+        return recontract, pair_addresses
+
+    recontraction_params = [tuple(cp.asarray(x) for x in params)
+                            for params in recontraction_params]
+
+    def recontract_gpu(batch_id, cderi, j3c, pair_start=0):
+        return _recontract_cderi_gpu(
+            cderi, j3c, recontraction_params[batch_id], pair_start)
+
+    return recontract_gpu, pair_addresses
+
+def _pair_recontraction_info(cell, bas_ij_batches, cart, bvk_ncells=1):
+    """Build the primitive-to-contracted pair scatter in cache order."""
     recontract_bas = cp.asnumpy(cell.recontract_bas)
     recontract_coef = cp.asnumpy(cell.recontract_coef)
     recontraction_idx = cp.asnumpy(cell.recontraction_idx)
@@ -995,57 +1014,51 @@ def _create_pair_recontractor(cell, bas_ij_batches, cart, bvk_ncells=1, on_gpu=F
 
     pair_addresses = pair_addresses[:cderi_npairs.value].copy()
 
-    def recontract(batch_id, cderi, j3c, pair_start=0):
-        """Scatter a contiguous [primitive_pair, aux] slice into shared CDERI.
-        """
-        assert j3c.dtype == cderi.dtype
-        npair, naux = j3c.shape
-        out_idx, out_offsets, coef = recontraction_params[batch_id]
-        # Keep absolute offsets into out_idx/coef; only the input rows are sliced.
-        out_offsets = out_offsets[pair_start:pair_start+npair+1]
-        assert len(out_offsets) == npair + 1
-        if j3c.dtype == np.float64:
-            kern = libpbc.PBCrecontract_cderi
-        else:
-            kern = libpbc.PBCzrecontract_cderi
-        kern(cderi.ctypes, j3c.ctypes,
-             out_idx.ctypes, out_offsets.ctypes, coef.ctypes,
-             ctypes.c_int(naux), ctypes.c_int(cderi.shape[1]),
-             ctypes.c_int(npair))
-        return cderi
+    return recontraction_params, pair_addresses
 
-    if not on_gpu:
-        return recontract, pair_addresses
+def _recontract_cderi(cderi, j3c, params, pair_start=0):
+    """Accumulate a contiguous host [primitive_pair, aux] slice into CDERI."""
+    assert j3c.dtype == cderi.dtype
+    npair, naux = j3c.shape
+    out_idx, out_offsets, coef = params
+    # Keep absolute offsets into out_idx/coef; only the input rows are sliced.
+    out_offsets = out_offsets[pair_start:pair_start+npair+1]
+    assert len(out_offsets) == npair + 1
+    if j3c.dtype == np.float64:
+        kern = libpbc.PBCrecontract_cderi
+    else:
+        kern = libpbc.PBCzrecontract_cderi
+    kern(cderi.ctypes, j3c.ctypes,
+         out_idx.ctypes, out_offsets.ctypes, coef.ctypes,
+         ctypes.c_int(naux), ctypes.c_int(cderi.shape[1]),
+         ctypes.c_int(npair))
+    return cderi
 
-    recontraction_params = [tuple(cp.asarray(x) for x in params)
-                            for params in recontraction_params]
 
-    def recontract_gpu(batch_id, cderi, j3c, pair_start=0):
-        """Accumulate contiguous device [primitive_pair, aux] into CDERI.
+def _recontract_cderi_gpu(cderi, j3c, params, pair_start=0):
+    """Accumulate contiguous device [primitive_pair, aux] into CDERI.
 
-        Both arrays and the recontraction metadata must be on the same device.
-        The output is accumulated in place on the current stream.
-        """
-        assert isinstance(cderi, cp.ndarray) and isinstance(j3c, cp.ndarray)
-        assert j3c.dtype == cderi.dtype and j3c.dtype in (np.float64, np.complex128)
-        assert j3c.flags.c_contiguous and cderi.flags.c_contiguous
-        npair, naux = j3c.shape
-        assert cderi.shape[0] == naux
-        out_idx, out_offsets, coef = recontraction_params[batch_id]
-        out_offsets = out_offsets[pair_start:pair_start+npair+1]
-        assert len(out_offsets) == npair + 1
-        err = libpbc.PBCrecontract_cderi_gpu(
-            ctypes.c_void_p(cderi.data.ptr), ctypes.c_void_p(j3c.data.ptr),
-            ctypes.c_void_p(out_idx.data.ptr), ctypes.c_void_p(out_offsets.data.ptr),
-            ctypes.c_void_p(coef.data.ptr), ctypes.c_int(naux),
-            ctypes.c_int(cderi.shape[1]), ctypes.c_int(npair),
-            ctypes.c_int(j3c.dtype.itemsize // 8),
-            ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
-        if err != 0:
-            raise RuntimeError('PBCrecontract_cderi_gpu failed')
-        return cderi
-
-    return recontract_gpu, pair_addresses
+    Arrays and scatter metadata must be on the same device. The output is
+    accumulated in place on the current stream, including sliced batches.
+    """
+    assert isinstance(cderi, cp.ndarray) and isinstance(j3c, cp.ndarray)
+    assert j3c.dtype == cderi.dtype and j3c.dtype in (np.float64, np.complex128)
+    assert j3c.flags.c_contiguous and cderi.flags.c_contiguous
+    npair, naux = j3c.shape
+    assert cderi.shape[0] == naux
+    out_idx, out_offsets, coef = params
+    out_offsets = out_offsets[pair_start:pair_start+npair+1]
+    assert len(out_offsets) == npair + 1
+    err = libpbc.PBCrecontract_cderi_gpu(
+        ctypes.c_void_p(cderi.data.ptr), ctypes.c_void_p(j3c.data.ptr),
+        ctypes.c_void_p(out_idx.data.ptr), ctypes.c_void_p(out_offsets.data.ptr),
+        ctypes.c_void_p(coef.data.ptr), ctypes.c_int(naux),
+        ctypes.c_int(cderi.shape[1]), ctypes.c_int(npair),
+        ctypes.c_int(j3c.dtype.itemsize // 8),
+        ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
+    if err != 0:
+        raise RuntimeError('PBCrecontract_cderi_gpu failed')
+    return cderi
 
 def _count_ao_pairs(cell, bas_ij_batches, cart, ncells=1):
     l = cp.asarray(cell._bas[:,ANG_OF])

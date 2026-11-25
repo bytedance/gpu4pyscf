@@ -919,6 +919,68 @@ def empty_mapped(shape, dtype=float, order='C'):
     out = np.ndarray(shape, dtype=dtype, buffer=mem, order=order)
     return out
 
+def mapped_view(a):
+    '''Return a CuPy view of an existing mapped NumPy allocation, without copying.
+
+    Parameters
+    ----------
+    a : numpy.ndarray
+        Writable C- or F-contiguous array backed by GPU-mapped pinned host
+        memory, for example an array returned by :func:`empty_mapped`.
+        Its dtype must be supported by CuPy. Ordinary NumPy allocations are
+        not registered or mapped by this function. To access a strided slice,
+        create the view of the contiguous array first, then slice that view.
+
+    Returns
+    -------
+    cupy.ndarray
+        Array with the same shape, dtype and strides, on the current device.
+        It aliases the host storage: no device data buffer is allocated and
+        no data is transferred when the view is created. The view retains
+        ``a`` as its owner, keeping the host allocation alive. Empty arrays
+        produce an empty view without querying a host pointer.
+
+    Notes
+    -----
+    The device pointer is obtained from CUDA's attributes for the mapped
+    allocation and wrapped in ``cupy.cuda.UnownedMemory``. This API is
+    available in CuPy 13; CuPy 14 is not required.
+
+    GPU kernels can read and write this host allocation directly. For a
+    discrete GPU these accesses still transfer bytes over the CPU-GPU
+    interconnect, so mapped memory does not provide device-memory bandwidth.
+    "Zero-copy" here means that no separate device mirror or host staging
+    buffer is needed. Creating the view does not migrate the data to the GPU.
+
+    This function does not synchronize. Finish GPU writes before reading the
+    corresponding host data, and finish GPU reads before modifying that data
+    on the CPU. Synchronize the stream performing the accesses (or use an
+    appropriate event). Keep the view alive until its GPU operations finish.
+    The allocation must be accessible from the current GPU; creating a view
+    does not enable access from other devices.
+
+    Examples
+    --------
+    >>> host = empty_mapped((100, 200))
+    >>> device_view = mapped_view(host)
+    >>> device_view[:, 20:40] = 1.0
+    >>> cupy.cuda.get_current_stream().synchronize()
+    >>> np.all(host[:, 20:40] == 1.0)
+    True
+    '''
+    assert isinstance(a, np.ndarray)
+    assert a.flags.c_contiguous or a.flags.f_contiguous
+    assert a.flags.writeable
+    ptr = 0
+    if a.size:
+        ptr = cupy.cuda.runtime.pointerGetAttributes(a.ctypes.data).devicePointer
+        if not ptr:
+            raise ValueError('Input must be GPU-mapped host memory')
+    mem = cupy.cuda.UnownedMemory(
+        ptr, a.nbytes, a, device_id=cupy.cuda.device.get_device_id())
+    return cupy.ndarray(a.shape, dtype=a.dtype, strides=a.strides,
+                        memptr=cupy.cuda.MemoryPointer(mem, 0))
+
 def ndarray(shape, dtype=np.float64, buffer=None):
     '''
     Construct CuPy ndarray object using the NumPy ndarray API

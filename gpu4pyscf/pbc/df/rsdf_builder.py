@@ -37,7 +37,7 @@ from pyscf.pbc.lib.kpts_helper import member
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.cupy_helper import (
     contract, get_avail_mem, asarray, sandwich_dot, empty_mapped, ndarray,
-    libcupy_helper, zero_fill)
+    libcupy_helper, zero_fill, mapped_view)
 from gpu4pyscf.lib import multi_gpu
 from gpu4pyscf.df.int3c2e_bdiv import libvhf_rys
 from gpu4pyscf.pbc.df import ft_ao, int3c2e
@@ -402,9 +402,79 @@ def compressed_cderi_gamma_point(cell, auxcell, omega=None,
     return compressed_cderi_j_only(
         cell, auxcell, bvkmesh, omega, linear_dep_threshold, exclude_dd, int3c2e_opt)
 
+def _build_j_only_sr(opt, cart, with_dd):
+    """Build all compact pairs in auxiliary slabs, then save [aux, pair]."""
+    cell, auxcell = opt.cell, opt.auxcell
+    ncells = len(opt.bvkmesh_Ls)
+    batch = cell.aggregate_shl_pairs(opt.bas_ij_cache)
+    batches = [batch]
+    if with_dd:
+        batches.append(cell.aggregate_shl_pairs(opt.dd_ft_opt.bas_ij_cache))
+    params, pair_addresses = int3c2e._pair_recontraction_info(
+        cell, batches, cart, ncells)
+    npairs = int(int3c2e._count_ao_pairs(cell, [batch], cart, ncells)[0])
+    ncols = len(pair_addresses)
+    naux = auxcell.nao
+    context_device = cp.cuda.device.get_device_id()
+
+    def allocate_sr():
+        with cp.cuda.Device(context_device):
+            return empty_mapped((naux, ncols))
+
+    if npairs == 0:
+        sr = allocate_sr()
+        zero_fill(sr)
+        return sr, params, pair_addresses
+
+    # Every SR launch retains all primitive pairs. Limit the auxiliary shells
+    # so the input, image sum and contracted output fit together on the GPU.
+    metadata_bytes = sum(x.nbytes for x in params[0])
+    mem_free = int(get_avail_mem(exclude_memory_pool=True) * .7) - metadata_bytes
+    aux_capacity = mem_free // (8*(npairs*(ncells+1) + ncols))
+    lmax = int(auxcell.uniq_l_ctr[:,0].max())
+    max_nf = (lmax+1)*(lmax+2)//2
+    aux_batch_size = min(naux, aux_capacity) // max_nf
+    if aux_batch_size < 1:
+        raise RuntimeError('Insufficient GPU memory for all SR pairs and one auxiliary shell')
+    context = opt.int3c2e_evaluator(aux_batch_size=aux_batch_size, cart=cart)
+    aux_offsets = context[2]
+    logger.debug1(cell, 'SR pairs = %d, contracted pairs = %d, auxiliary slabs = %d',
+                  npairs, ncols, len(aux_offsets)-1)
+    tasks = iter(range(len(aux_offsets)-1))
+
+    def proc():
+        local_context = context
+        if cp.cuda.device.get_device_id() != context_device:
+            local_context = opt.int3c2e_evaluator(
+                aux_batch_size=aux_batch_size, cart=cart)
+        evaluate = local_context[0]
+        scatter = tuple(cp.asarray(x) for x in params[0])
+        for aux_id in tasks:
+            a0, a1 = aux_offsets[aux_id:aux_id+2]
+            j3c = evaluate(aux_batch_id=aux_id)
+            j3c = j3c.sum(axis=1)
+            contracted = cp.zeros((a1-a0, ncols))
+            int3c2e._recontract_cderi_gpu(contracted, j3c, scatter)
+            contracted.get(out=sr_future.result()[a0:a1])
+            contracted = j3c = None
+
+    with ThreadPoolExecutor(max_workers=1) as allocator:
+        sr_future = allocator.submit(allocate_sr)
+        multi_gpu.run(proc, non_blocking=True)
+        multi_gpu.synchronize()
+        sr = sr_future.result()
+    return sr, params, pair_addresses
+
 def compressed_cderi_j_only(cell, auxcell, bvkmesh, omega=None,
                             linear_dep_threshold=LINEAR_DEP_THR,
                             exclude_dd=False, int3c2e_opt=None):
+    """Build J-only integrals in separate SR and LR stages.
+
+    SR retains all primitive pairs and blocks auxiliary shells, writing
+    GPU-recontracted [aux, pair] slabs to mapped memory. LR uses whole-shell
+    FT batches, adds LR to each raw SR column slab, then applies the auxiliary
+    metric and writes the result back into the same mapped allocation.
+    """
     assert bvkmesh is not None
     log = logger.new_logger(cell)
     t0 = t1 = log.init_timer()
@@ -422,14 +492,11 @@ def compressed_cderi_j_only(cell, auxcell, bvkmesh, omega=None,
     auxcell = int3c2e_opt.auxcell
     rsdf_omega = int3c2e_opt.omega
     log.debug('omega = %g, rsdf_builder omega = %g', omega, rsdf_omega)
-    bvk_ncells = len(int3c2e_opt.bvkmesh_Ls)
 
     log.debug('Generate auxcell 2c2e integrals. naux=%d', auxcell.nao)
     cd_j2c_cache, negative_metric_size = _precontract_j2c_aux_coeff(
         auxcell, None, omega, rsdf_omega, linear_dep_threshold)
     naux_cart, naux = cd_j2c_cache[0].shape
-
-    is_gamma_point = bvkmesh is None or np.prod(bvkmesh) == 1
 
     with_long_range = omega < rsdf_omega
     if with_long_range:
@@ -442,134 +509,74 @@ def compressed_cderi_j_only(cell, auxcell, bvkmesh, omega=None,
     Gv = cell.get_Gv(mesh)
     ngrids = len(Gv)
 
-    n_compact_pairs = int3c2e_opt.get_n_compact_pairs()
-    mem_free = get_avail_mem(exclude_memory_pool=True)
-    mem_free -= cd_j2c_cache[0].nbytes # cd_j2c_cache
-    mem_free -= ngrids * naux * 16 # auxG_cache
-    # To ensure tasks consistently distributed to each processor, the same batch
-    # size should be used for int3c2e_evaluator for each processor.
-    batch_size = min(n_compact_pairs+1, int(mem_free*0.7) // (naux_cart*bvk_ncells*16*4))
-    log.debug('Avail GPU mem = %s GB. batch_size = %d', mem_free*1e-9, batch_size)
-    if batch_size < 1:
-        raise RuntimeError('Insufficient GPU memory')
-
     cart = cell.cell.cart
-    context_device = cp.cuda.device.get_device_id()
-    context = int3c2e_opt.int3c2e_evaluator(ao_pair_batch_size=batch_size, cart=cart)
-    bas_ij_batches = context[1]
-
     with_dd = not exclude_dd and int3c2e_opt.dd_ft_opt is not None
-    if not with_dd:
-        recontract, pair_addresses = int3c2e._create_pair_recontractor(
-            cell, bas_ij_batches, cart, bvk_ncells)
-    else:
-        dd_batch = cell.aggregate_shl_pairs(
-            int3c2e_opt.dd_ft_opt.bas_ij_cache, ft_ao.ft_ao_scheme()[0])
-        recontract, pair_addresses = int3c2e._create_pair_recontractor(
-            cell, bas_ij_batches + [dd_batch], cart, bvk_ncells)
-
-    # Primitive diagonal blocks were half-weighted before contraction.
-    # No additional contracted-diagonal correction is needed by J contractions.
-    diag = np.empty(0, dtype=np.int32)
-    cderi_idx = cp.asarray(pair_addresses, dtype=np.int32), diag
+    sr, recontraction_params, pair_addresses = _build_j_only_sr(
+        int3c2e_opt, cart, with_dd)
     nao_pairs = len(pair_addresses)
-    log.debug('nao_pairs = %d, n_compact_pairs = %d', nao_pairs, n_compact_pairs)
+    cderi_idx = cp.asarray(pair_addresses, dtype=np.int32), np.empty(0, dtype=np.int32)
+    t1 = log.timer_debug1('SR integrals and GPU pair recontraction', *t0)
 
-    ao_pair_counts = int3c2e._count_ao_pairs(cell, bas_ij_batches, cart, bvk_ncells)
-    max_pair_size = int(max(ao_pair_counts, default=0))
-
-    log.info('Requires %.6g GB mapped memory on host', naux*nao_pairs*8e-9)
-    def allocate_cderi():
-        with cp.cuda.Device(context_device):
-            buf = empty_mapped((naux, nao_pairs))
-            zero_fill(buf)
-        return buf
-
-    tasks = iter(range(len(ao_pair_counts)))
-    def proc():
-        device_id = cp.cuda.device.get_device_id()
-        stream = cp.cuda.get_current_stream()
-        t1 = log.init_timer()
-
-        local_context = context
-        if device_id != context_device:
-            local_context = int3c2e_opt.int3c2e_evaluator(
-                ao_pair_batch_size=batch_size, cart=cell.cell.cart)
-        eval_j3c, bas_ij_batches, _ = local_context
-
-        shl_pair_batches = len(ao_pair_counts)
-        aux_coeff = cp.asarray(cd_j2c_cache[0])
-
+    # Each destination column slab is completed before the metric changes its
+    # auxiliary dimension. Other slabs still contain untouched raw SR data.
+    aux_coeff = cp.asarray(cd_j2c_cache[0])
+    assert naux <= naux_cart
+    mem_free = int(get_avail_mem(exclude_memory_pool=True) * .7)
+    pair_block = max(1, mem_free // (32*(naux_cart + naux)))
+    pair_offsets = [0]
+    if int3c2e_opt.get_n_compact_pairs() > 0:
         ft_opt = ft_ao.FTOpt.from_intopt(int3c2e_opt)
-        eval_ft, ft_pair_offsets = ft_opt.ft_evaluator(
-            cart=cell.cell.cart, original_ao_order=False,
-            bas_ij_batches=bas_ij_batches)
-
-        log.debug1('cache auxG')
-        auxG = cp.asarray(cd_j2c_cache[0]).T.dot(ft_ao.ft_ao(auxcell, Gv).T)
-        auxG *= cp.asarray(coulG)
-
-        avail_mem = mem_free - max_pair_size*naux_cart*bvk_ncells*8 # buf1
-        avail_mem -= max_pair_size*naux*8 # buf0
-        Gblksize = int(avail_mem//(16*(max_pair_size+naux*2))) // 32 * 32
-        if Gblksize <= 0:
-            raise RuntimeError('Insufficient GPU memory')
-        Gblksize = min(Gblksize, ngrids)
-        log.debug1('ngrids = %d Gblksize = %d naux=%d max_pair_size=%d',
-                   ngrids, Gblksize, naux, max_pair_size)
-        buf0 = cp.empty(naux*max_pair_size)
-        buf1 = cp.empty(max_pair_size*naux_cart*bvk_ncells)
-        buf2 = cp.empty(max_pair_size*Gblksize, dtype=np.complex128)
-        write_buf = empty_mapped(naux*max_pair_size)
-        write_buf1 = empty_mapped(naux*max_pair_size)
-        future = None
-        for iteration, batch_id in enumerate(tasks):
-            log.debug1('batch %d/%d', batch_id+1, shl_pair_batches)
-            j3c = eval_j3c(shl_pair_batch_id=batch_id, out=buf1)
-            if j3c.size == 0:
+        ft_batch_size = max(1, mem_free // (64*naux_cart))
+        eval_ft, pair_offsets = ft_opt.ft_evaluator(
+            batch_size=ft_batch_size, cart=cart, original_ao_order=False)
+    out_idx, out_offsets, coef = recontraction_params[0]
+    max_pairs = int(np.diff(pair_offsets).max(initial=0))
+    pair_mem = 8*((naux_cart+naux)*min(pair_block, nao_pairs) + naux_cart*max_pairs)
+    Gblksize = min(ngrids, (mem_free-pair_mem) //
+                   (16*(max_pairs + 2*naux_cart)))
+    if max_pairs and Gblksize < 1:
+        raise RuntimeError('Insufficient GPU memory for a whole FT shell block')
+    log.debug1('LR output columns/block = %d, FT batches = %d, Gblksize = %d',
+               pair_block, len(pair_offsets)-1, Gblksize)
+    sr_gpu = mapped_view(sr)
+    for q0, q1 in lib.prange(0, nao_pairs, pair_block):
+        target = cp.asarray(sr[:,q0:q1])
+        for batch_id, (p0, p1) in enumerate(zip(pair_offsets[:-1], pair_offsets[1:])):
+            k0, k1 = out_offsets[p0], out_offsets[p1]
+            columns = out_idx[k0:k1]
+            selected = (columns >= q0) & (columns < q1)
+            if not selected.any():
                 continue
-
-            pair_size = j3c.shape[0]
-            j3c_buf = ndarray((pair_size, naux), buffer=buf0)
-            if is_gamma_point:
-                j3c = j3c[:,0,:].dot(aux_coeff, out=j3c_buf)
-            else:
-                j3c = j3c.sum(axis=1).dot(aux_coeff, out=j3c_buf)
-            t1 = log.timer_debug1(f'sr int3c2e on Device {device_id}', *t1)
-
-            for p0, p1 in lib.prange(0, ngrids, Gblksize):
-                pqG = eval_ft(Gv[p0:p1], batch_id, out=buf2)
-                # \sum_G coulG * ints(ij * exp(-i G * r)) * ints(P * exp(i G * r))
-                # = \sum_G FT(ij, G) conj(FT(aux, G)) , where aux
-                # functions |P> are assumed to be real
+            # Keep whole primitive shell blocks for FT. Restrict only their
+            # scatter destinations; all contributions to this slab must be
+            # added before applying the auxiliary metric.
+            offsets = np.empty(len(selected)+1, dtype=np.int32)
+            offsets[0] = 0
+            np.cumsum(selected, out=offsets[1:])
+            params = (cp.asarray(columns[selected] - q0),
+                      cp.asarray(offsets[out_offsets[p0:p1+1] - k0]),
+                      cp.asarray(coef[k0:k1][selected]))
+            j3c = cp.zeros((p1-p0, naux_cart))
+            for g0, g1 in lib.prange(0, ngrids, Gblksize):
+                auxG = cp.ascontiguousarray(ft_ao.ft_ao(auxcell, Gv[g0:g1]).T)
+                auxG *= cp.asarray(coulG[0,g0:g1])
+                pqG = eval_ft(Gv[g0:g1], batch_id)
                 contract('pG,rG->pr', pqG.view(np.float64),
-                         auxG[:,p0:p1].view(np.float64), beta=1, out=j3c)
-            j3c_buf = None
-            t1 = log.timer_debug1(f'ft_ao and lr int3c2e on Device {device_id}', *t1)
+                         auxG.view(np.float64), beta=1, out=j3c)
+                auxG = pqG = None
+            int3c2e._recontract_cderi_gpu(target, j3c, params)
+            j3c = params = None
+        block = aux_coeff.T.dot(target)
+        sr_gpu[:naux,q0:q1] = block
+        block = target = None
+    cp.cuda.get_current_stream().synchronize()
+    # Row truncation preserves C contiguity and retains the original allocation.
+    cderi = {0: sr[:naux]}
+    t1 = log.timer_debug1('LR integrals and auxiliary metric contraction', *t1)
 
-            host_j3c = np.ndarray((pair_size, naux), buffer=write_buf)
-            j3c.get(out=host_j3c)
-            if future is not None:
-                future.result()
-            stream.synchronize()
-            future = writer.submit(
-                recontract, batch_id, cderi_future.result(), host_j3c)
-            write_buf, write_buf1 = write_buf1, write_buf
-            t1 = log.timer_debug1(f'store int3c2e on Device {device_id}', *t1)
-
-        if future is not None:
-            future.result()
-
-    # Initialize the host buffer while GPU workers compute integrals.
-    # One CPU writer serializes overlapping columns from all GPU workers.
-    # Context exit waits for submitted writes even if a producer fails.
-    with ThreadPoolExecutor(max_workers=1) as allocator, \
-         ThreadPoolExecutor(max_workers=1) as writer:
-        cderi_future = allocator.submit(allocate_cderi)
-        if n_compact_pairs > 0:
-            multi_gpu.run(proc, non_blocking=True)
-            multi_gpu.synchronize()
-        cderi = {0: cderi_future.result()}
+    def recontract(batch_id, target, j3c, pair_start=0):
+        return int3c2e._recontract_cderi(
+            target, j3c, recontraction_params[batch_id], pair_start)
 
     if with_dd:
         t1 = log.timer_debug1('compact part of GDF tensor', *t0)
