@@ -567,3 +567,38 @@ def test_contract_auxvec_with_kpts():
     cp.testing.assert_allclose(gamma, batch[0], atol=1e-10, rtol=0)
     cp.testing.assert_allclose(single, one[0], atol=1e-10, rtol=0)
     cp.testing.assert_allclose(single, batch[1], atol=1e-10, rtol=0)
+
+
+def test_pair_recontractor_gpu():
+    cell = pyscf.M(
+        atom='C 0 0 0', a=np.eye(3)*5,
+        basis=[[2, [3., .3, -.1], [1., .6, .2], [.5, .2, .8]]])
+    auxcell = cell.copy()
+    auxcell.basis = [[0, [1., 1.]]]
+    auxcell.build()
+    opt = int3c2e.SRInt3c2eOpt(cell, auxcell, .3, [2, 1, 1]).build()
+    rng = np.random.default_rng(12)
+    for cart in (False, True):
+        batches = opt.int3c2e_evaluator(ao_pair_batch_size=128, cart=cart)[1]
+        cpu, addresses = int3c2e._create_pair_recontractor(
+            opt.cell, batches, cart, 2)
+        gpu, gpu_addresses = int3c2e._create_pair_recontractor(
+            opt.cell, batches, cart, 2, on_gpu=True)
+        np.testing.assert_array_equal(addresses, gpu_addresses)
+        counts = int3c2e._count_ao_pairs(opt.cell, batches, cart, 2)
+        for dtype in (np.float64, np.complex128):
+            ref = np.ones((7, len(addresses)), dtype=dtype)
+            out = cp.asarray(ref)
+            with cp.cuda.Stream(non_blocking=True) as stream:
+                for batch_id, count in enumerate(counts):
+                    inp = rng.random((count, 7)).astype(dtype)
+                    if dtype == np.complex128:
+                        inp += 1j*rng.random(inp.shape)
+                    cpu(batch_id, ref, inp)
+                    # Slices keep absolute recontraction offsets.
+                    mid = count // 2
+                    for p0, p1 in ((0, mid), (mid, count)):
+                        gpu(batch_id, out, cp.asarray(inp[p0:p1]), pair_start=p0)
+                gpu(0, out, cp.empty((0, 7), dtype=dtype))
+                stream.synchronize()
+            np.testing.assert_allclose(out.get(), ref, atol=1e-12, rtol=1e-12)

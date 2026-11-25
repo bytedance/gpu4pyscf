@@ -927,12 +927,15 @@ def _counts_to_offsets(counts):
     out[0] = 0
     return out
 
-def _create_pair_recontractor(cell, bas_ij_batches, cart, bvk_ncells=1):
+def _create_pair_recontractor(cell, bas_ij_batches, cart, bvk_ncells=1, on_gpu=False):
     '''Create an ordered partial CDERI tensor from a primitive shell triangle.
 
     Preserve (i, image, j) orientation and half-weight diagonal primitive shell
     blocks. Unpacking must add the exchanged tensor, not copy a triangle.
+    With on_gpu=True, create device metadata and return a GPU recontractor
+    for contiguous float64 or complex128 arrays on the current device.
     '''
+    # GPU metadata belongs to the current device; calls use its current stream.
     recontract_bas = cp.asnumpy(cell.recontract_bas)
     recontract_coef = cp.asnumpy(cell.recontract_coef)
     recontraction_idx = cp.asnumpy(cell.recontraction_idx)
@@ -1011,7 +1014,38 @@ def _create_pair_recontractor(cell, bas_ij_batches, cart, bvk_ncells=1):
              ctypes.c_int(npair))
         return cderi
 
-    return recontract, pair_addresses
+    if not on_gpu:
+        return recontract, pair_addresses
+
+    recontraction_params = [tuple(cp.asarray(x) for x in params)
+                            for params in recontraction_params]
+
+    def recontract_gpu(batch_id, cderi, j3c, pair_start=0):
+        """Accumulate contiguous device [primitive_pair, aux] into CDERI.
+
+        Both arrays and the recontraction metadata must be on the same device.
+        The output is accumulated in place on the current stream.
+        """
+        assert isinstance(cderi, cp.ndarray) and isinstance(j3c, cp.ndarray)
+        assert j3c.dtype == cderi.dtype and j3c.dtype in (np.float64, np.complex128)
+        assert j3c.flags.c_contiguous and cderi.flags.c_contiguous
+        npair, naux = j3c.shape
+        assert cderi.shape[0] == naux
+        out_idx, out_offsets, coef = recontraction_params[batch_id]
+        out_offsets = out_offsets[pair_start:pair_start+npair+1]
+        assert len(out_offsets) == npair + 1
+        err = libpbc.PBCrecontract_cderi_gpu(
+            ctypes.c_void_p(cderi.data.ptr), ctypes.c_void_p(j3c.data.ptr),
+            ctypes.c_void_p(out_idx.data.ptr), ctypes.c_void_p(out_offsets.data.ptr),
+            ctypes.c_void_p(coef.data.ptr), ctypes.c_int(naux),
+            ctypes.c_int(cderi.shape[1]), ctypes.c_int(npair),
+            ctypes.c_int(j3c.dtype.itemsize // 8),
+            ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
+        if err != 0:
+            raise RuntimeError('PBCrecontract_cderi_gpu failed')
+        return cderi
+
+    return recontract_gpu, pair_addresses
 
 def _count_ao_pairs(cell, bas_ij_batches, cart, ncells=1):
     l = cp.asarray(cell._bas[:,ANG_OF])
