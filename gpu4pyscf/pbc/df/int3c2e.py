@@ -525,6 +525,7 @@ class SRInt3c2eOpt:
         evaluate_j3c(shl_pair_batch_id, aux_batch_id, out=None) returns a
         GPU [primitive pair, image, aux] buffer for the selected batches.
         aux_offsets delimit each auxiliary batch in the sorted auxiliary basis.
+        aux_batch_size limits Cartesian auxiliary AOs, keeping shells whole.
         Pair recontraction is set up separately with _create_pair_recontractor.
         '''
         if self.bvkmesh_Ls is None:

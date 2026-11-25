@@ -433,8 +433,8 @@ def _build_j_only_sr(opt, cart, with_dd):
     aux_capacity = mem_free // (8*(npairs*(ncells+1) + ncols))
     lmax = int(auxcell.uniq_l_ctr[:,0].max())
     max_nf = (lmax+1)*(lmax+2)//2
-    aux_batch_size = min(naux, aux_capacity) // max_nf
-    if aux_batch_size < 1:
+    aux_batch_size = min(naux, aux_capacity)
+    if aux_batch_size < max_nf:
         raise RuntimeError('Insufficient GPU memory for all SR pairs and one auxiliary shell')
     context = opt.int3c2e_evaluator(aux_batch_size=aux_batch_size, cart=cart)
     aux_offsets = context[2]
