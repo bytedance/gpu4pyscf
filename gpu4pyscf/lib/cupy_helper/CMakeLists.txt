@@ -15,6 +15,7 @@
 #set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=sm_80")
 
 set(cupy_helper_src
+  zero_fill.c
   transpose.cu
   block_diag.cu
   unpack.cu
@@ -40,6 +41,13 @@ if(BUILD_CUTLASS)
 endif()
 
 add_library(cupy_helper SHARED ${cupy_helper_src})
+if(ENABLE_OPENMP AND OPENMP_FOUND)
+  if(USE_SYCL)
+    target_link_libraries(cupy_helper PRIVATE OpenMP::OpenMP_CXX)
+  else()
+    target_link_libraries(cupy_helper PRIVATE ${OPENMP_C_PROPERTIES})
+  endif()
+endif()
 
 if(BUILD_CUTLASS)
   add_dependencies(cupy_helper cutlass)

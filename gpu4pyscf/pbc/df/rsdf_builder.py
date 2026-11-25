@@ -37,7 +37,7 @@ from pyscf.pbc.lib.kpts_helper import member
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.cupy_helper import (
     contract, get_avail_mem, asarray, sandwich_dot, empty_mapped, ndarray,
-    libcupy_helper)
+    libcupy_helper, zero_fill)
 from gpu4pyscf.lib import multi_gpu
 from gpu4pyscf.df.int3c2e_bdiv import libvhf_rys
 from gpu4pyscf.pbc.df import ft_ao, int3c2e
@@ -679,7 +679,7 @@ def compressed_cderi_kk(cell, auxcell, kpts, bvkmesh=None, omega=None,
     for j2c_idx, (kp, kp_conj, ki_idx, kj_idx) in enumerate(kpt_iters):
         naux = cd_j2c_cache[j2c_idx].shape[1]
         cderi[kp] = empty_mapped((naux,nao_pairs), dtype=np.complex128)
-        cderi[kp].fill(0.)
+        zero_fill(cderi[kp])
 
     tasks = iter(range(len(ao_pair_counts)))
     def proc():
@@ -718,7 +718,7 @@ def compressed_cderi_kk(cell, auxcell, kpts, bvkmesh=None, omega=None,
         # work1 holds either the SR/metric tensors or pqG. Retain the
         # auxiliary workspace allowance for both possible buffer sizes.
         Gblksize = int(min((avail_mem-work1_size*8)//(naux_cart*32),
-                          avail_mem//(16*(max_pair_size+naux_cart*2)))) // 32 * 32
+                           avail_mem//(16*(max_pair_size+naux_cart*2)))) // 32 * 32
         if Gblksize <= 0:
             raise RuntimeError('Insufficient GPU memory')
         Gblksize = min(Gblksize, ngrids)
