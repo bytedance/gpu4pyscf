@@ -479,8 +479,11 @@ def compressed_cderi_j_only(cell, auxcell, bvkmesh, omega=None,
     max_pair_size = int(max(ao_pair_counts, default=0))
 
     log.info('Requires %.6g GB mapped memory on host', naux*nao_pairs*8e-9)
-    cderi = empty_mapped((naux, nao_pairs))
-    cderi.fill(0.)
+    def allocate_cderi():
+        with cp.cuda.Device(context_device):
+            buf = empty_mapped((naux, nao_pairs))
+            zero_fill(buf)
+        return buf
 
     tasks = iter(range(len(ao_pair_counts)))
     def proc():
@@ -549,20 +552,24 @@ def compressed_cderi_j_only(cell, auxcell, bvkmesh, omega=None,
             if future is not None:
                 future.result()
             stream.synchronize()
-            future = writer.submit(recontract, batch_id, cderi, host_j3c)
+            future = writer.submit(
+                recontract, batch_id, cderi_future.result(), host_j3c)
             write_buf, write_buf1 = write_buf1, write_buf
             t1 = log.timer_debug1(f'store int3c2e on Device {device_id}', *t1)
 
         if future is not None:
             future.result()
 
-    if n_compact_pairs > 0:
-        # One CPU writer serializes overlapping columns from all GPU workers.
-        # Context exit waits for submitted writes even if a producer fails.
-        with ThreadPoolExecutor(max_workers=1) as writer:
+    # Initialize the host buffer while GPU workers compute integrals.
+    # One CPU writer serializes overlapping columns from all GPU workers.
+    # Context exit waits for submitted writes even if a producer fails.
+    with ThreadPoolExecutor(max_workers=1) as allocator, \
+         ThreadPoolExecutor(max_workers=1) as writer:
+        cderi_future = allocator.submit(allocate_cderi)
+        if n_compact_pairs > 0:
             multi_gpu.run(proc, non_blocking=True)
             multi_gpu.synchronize()
-    cderi = {0: cderi}
+        cderi = {0: cderi_future.result()}
 
     if with_dd:
         t1 = log.timer_debug1('compact part of GDF tensor', *t0)
@@ -675,11 +682,11 @@ def compressed_cderi_kk(cell, auxcell, kpts, bvkmesh=None, omega=None,
     naux_max = max(x.shape[1] for x in cd_j2c_cache)
     log.info('Requires %.6g GB mapped memory on host',
              len(cd_j2c_cache)*naux_max*nao_pairs*16e-9)
-    cderi = {}
-    for j2c_idx, (kp, kp_conj, ki_idx, kj_idx) in enumerate(kpt_iters):
-        naux = cd_j2c_cache[j2c_idx].shape[1]
-        cderi[kp] = empty_mapped((naux,nao_pairs), dtype=np.complex128)
-        zero_fill(cderi[kp])
+    def allocate_cderi(naux):
+        with cp.cuda.Device(context_device):
+            buf = empty_mapped((naux,nao_pairs), dtype=np.complex128)
+            zero_fill(buf)
+        return buf
 
     tasks = iter(range(len(ao_pair_counts)))
     def proc():
@@ -760,16 +767,24 @@ def compressed_cderi_kk(cell, auxcell, kpts, bvkmesh=None, omega=None,
                     future.result()
                 stream.synchronize()
                 future = writer.submit(
-                    recontract, batch_id, cderi[kp], host_j3c)
+                    recontract, batch_id, cderi_futures[kp].result(), host_j3c)
                 write_buf, write_buf1 = write_buf1, write_buf
             t1 = log.timer_debug1(f'lr int3c2e and store int3c2e on Device {device_id}', *t1)
         if future is not None:
             future.result()
 
-    if n_compact_pairs > 0:
-        with ThreadPoolExecutor(max_workers=1) as writer:
+    # Allocate and zero host buffers while GPU workers prepare and compute
+    # integrals. Wait for each buffer only when its first write is submitted.
+    with ThreadPoolExecutor(max_workers=1) as allocator, \
+         ThreadPoolExecutor(max_workers=1) as writer:
+        cderi_futures = {
+            kp: allocator.submit(allocate_cderi, cd_j2c_cache[j2c_idx].shape[1])
+            for j2c_idx, (kp, _, _, _) in enumerate(kpt_iters)
+        }
+        if n_compact_pairs > 0:
             multi_gpu.run(proc, non_blocking=True)
             multi_gpu.synchronize()
+        cderi = {kp: future.result() for kp, future in cderi_futures.items()}
     if with_dd:
         t1 = log.timer_debug1('compact part of GDF tensor', *t0)
         _append_dd_cderi(int3c2e_opt, cderi, cd_j2c_cache, omega,

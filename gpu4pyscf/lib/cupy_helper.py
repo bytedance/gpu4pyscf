@@ -891,7 +891,6 @@ def zero_fill(a):
     '''Fill a contiguous numeric NumPy array with zeros using CPU OpenMP threads.'''
     assert isinstance(a, np.ndarray)
     assert a.flags.c_contiguous or a.flags.f_contiguous
-    assert a.flags.writeable and a.dtype.kind in 'biufc'
     libcupy_helper.zero_fill(ctypes.c_void_p(a.ctypes.data), ctypes.c_size_t(a.nbytes))
     return a
 
