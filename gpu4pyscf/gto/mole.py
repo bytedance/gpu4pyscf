@@ -1153,6 +1153,7 @@ class SortedCell(Cell, SortedGTO):
         raise NotImplementedError
 
     aggregate_shl_pairs = SortedMole.aggregate_shl_pairs
+    iter_pair_by_l = SortedMole.iter_pair_by_l
 
 class RysIntEnvVars(ctypes.Structure):
     _fields_ = [

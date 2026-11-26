@@ -364,7 +364,7 @@ class SRInt3c2eOpt:
         l_ctr_offsets = _counts_to_offsets(cell.l_ctr_counts)
         ij_tasks = [(i, j) for i in range(groups) for j in range(i+1)]
         img = cp.arange(bvk_ncells, dtype=np.uint32) * nbas
-        for i, j in ij_tasks:
+        for i, j in cell.iter_pair_by_l(ij_tasks):
             ish0, ish1 = l_ctr_offsets[i], l_ctr_offsets[i+1]
             jsh0, jsh1 = l_ctr_offsets[j], l_ctr_offsets[j+1]
             ish = cp.arange(ish0, ish1, dtype=np.uint32)

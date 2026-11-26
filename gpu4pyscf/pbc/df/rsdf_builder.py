@@ -39,6 +39,7 @@ from gpu4pyscf.lib.cupy_helper import (
     contract, get_avail_mem, asarray, sandwich_dot, empty_mapped, ndarray,
     libcupy_helper, zero_fill, mapped_view)
 from gpu4pyscf.lib import multi_gpu
+from gpu4pyscf.lib.utils import splits_by_blocksize
 from gpu4pyscf.df.int3c2e_bdiv import libvhf_rys
 from gpu4pyscf.pbc.df import ft_ao, int3c2e
 from gpu4pyscf.pbc.df.aft import _get_ZSI, _fake_nuc
@@ -390,10 +391,13 @@ def _append_dd_cderi(opt, cderi, cd_j2c_cache, omega, recontract, kpts=None):
                 if auxG_cache is None:
                     auxG = None
 
-            host_j3c = write_buf[:pair_size*naux].reshape(pair_size, naux)
-            j3c.get(out=host_j3c, stream=stream)
-            stream.synchronize()
-            recontract(-1, target, host_j3c, pair_start=p0)
+            if isinstance(target, cp.ndarray):
+                recontract(-1, target, j3c, pair_start=p0)
+            else:
+                host_j3c = write_buf[:pair_size*naux].reshape(pair_size, naux)
+                j3c.get(out=host_j3c, stream=stream)
+                stream.synchronize()
+                recontract(-1, target, host_j3c, pair_start=p0)
 
 def compressed_cderi_gamma_point(cell, auxcell, omega=None,
                                  linear_dep_threshold=LINEAR_DEP_THR,
@@ -417,19 +421,29 @@ def _build_j_only_sr(opt, cart, with_dd):
     naux = auxcell.nao
     context_device = cp.cuda.device.get_device_id()
 
+    sr_bytes = naux*ncols*8
+    avail_mem = get_avail_mem(exclude_memory_pool=True)
+    #TODO: if sr_on_gpu, recontract output can be set to sr_on_gpu
+    sr_on_gpu = multi_gpu.num_devices == 1 and sr_bytes < avail_mem*.7
+
     def allocate_sr():
         with cp.cuda.Device(context_device):
+            if sr_on_gpu:
+                sr = cp.zeros((naux, ncols))
+                cp.cuda.get_current_stream().synchronize()
+                return sr
             return empty_mapped((naux, ncols))
 
     if npairs == 0:
         sr = allocate_sr()
-        zero_fill(sr)
+        if not sr_on_gpu:
+            zero_fill(sr)
         return sr, params, pair_addresses
 
     # Every SR launch retains all primitive pairs. Limit the auxiliary shells
     # so the input, image sum and contracted output fit together on the GPU.
     metadata_bytes = sum(x.nbytes for x in params[0])
-    mem_free = int(get_avail_mem(exclude_memory_pool=True) * .7) - metadata_bytes
+    mem_free = int((avail_mem - (sr_bytes if sr_on_gpu else 0))*.7) - metadata_bytes
     aux_capacity = mem_free // (8*(npairs*(ncells+1) + ncols))
     lmax = int(auxcell.uniq_l_ctr[:,0].max())
     max_nf = (lmax+1)*(lmax+2)//2
@@ -453,9 +467,13 @@ def _build_j_only_sr(opt, cart, with_dd):
             a0, a1 = aux_offsets[aux_id:aux_id+2]
             j3c = evaluate(aux_batch_id=aux_id)
             j3c = j3c.sum(axis=1)
-            contracted = cp.zeros((a1-a0, ncols))
+            if sr_on_gpu:
+                contracted = sr_future.result()[a0:a1]
+            else:
+                contracted = cp.zeros((a1-a0, ncols))
             int3c2e._recontract_cderi_gpu(contracted, j3c, scatter)
-            contracted.get(out=sr_future.result()[a0:a1])
+            if not sr_on_gpu:
+                contracted.get(out=sr_future.result()[a0:a1])
             contracted = j3c = None
 
     with ThreadPoolExecutor(max_workers=1) as allocator:
@@ -465,15 +483,60 @@ def _build_j_only_sr(opt, cart, with_dd):
         sr = sr_future.result()
     return sr, params, pair_addresses
 
+def _j_only_lr_groups(opt, params, cart):
+    """Yield contiguous SR column slices and their matching primitive FT pairs."""
+    cell = opt.cell
+    ids = cell.contraction_group_ids
+    ls = cell.uniq_l_ctr[:,0]
+    nf = (ls+1)*(ls+2)//2 if cart else 2*ls+1
+    caches = list(opt.bas_ij_cache.items())
+    out_idx, out_offsets, coef = params
+    shell_start = pair_start = column_end = 0
+    start = 0
+    while start < len(caches):
+        i, j = caches[start][0]
+        group = (ids[i], ids[j])
+        end = start + 1
+        while end < len(caches):
+            i, j = caches[end][0]
+            if (ids[i], ids[j]) != group:
+                break
+            end += 1
+        cache = dict(caches[start:end])
+        nshells = sum(len(pairs) for pairs in cache.values())
+        npairs = sum(len(pairs)*int(nf[i]*nf[j]) for (i, j), pairs in cache.items())
+        c0, c1 = out_offsets[pair_start:pair_start+npairs+1][[0, -1]]
+        if c1 > c0:
+            indices = out_idx[c0:c1]
+            q0, q1 = int(indices.min()), int(indices.max())+1
+            assert q0 == column_end
+            column_end = q1
+            # A contraction-group pair owns a contiguous range of SR columns.
+            scatter = (indices-q0,
+                       out_offsets[pair_start:pair_start+npairs+1]-c0,
+                       coef[c0:c1])
+            ft_opt = ft_ao.FTOpt.from_intopt(opt)
+            ft_opt.bas_ij_cache = cache
+            img_offsets = opt.img_offsets[shell_start:shell_start+nshells+1]
+            img0, img1 = img_offsets[[0, -1]].get()
+            ft_opt.img_offsets = img_offsets-img0
+            ft_opt.img_idx = opt.img_idx[int(img0):int(img1)]
+            yield slice(q0, q1), ft_opt, scatter
+        shell_start += nshells
+        pair_start += npairs
+        start = end
+
+
 def compressed_cderi_j_only(cell, auxcell, bvkmesh, omega=None,
                             linear_dep_threshold=LINEAR_DEP_THR,
                             exclude_dd=False, int3c2e_opt=None):
     """Build J-only integrals in separate SR and LR stages.
 
-    SR retains all primitive pairs and blocks auxiliary shells, writing
-    GPU-recontracted [aux, pair] slabs to mapped memory. LR uses whole-shell
-    FT batches, adds LR to each raw SR column slab, then applies the auxiliary
-    metric and writes the result back into the same mapped allocation.
+    SR retains all primitive pairs and blocks auxiliary shells, storing
+    GPU-recontracted [aux, pair] slabs on the GPU when they fit, or in mapped
+    memory. LR follows the same contraction-group pair order, transforms SR and
+    auxiliary Fourier integrals with the metric, and recontracts the pair
+    Fourier integrals before accumulation into the same output allocation.
     """
     assert bvkmesh is not None
     log = logger.new_logger(cell)
@@ -485,8 +548,22 @@ def compressed_cderi_j_only(cell, auxcell, bvkmesh, omega=None,
         omega = abs(omega)
     if int3c2e_opt is None:
         rsdf_omega = max(omega, _guess_omega(cell, bvkmesh))
+        sorted_aux = SortedGTO.from_cell(auxcell)
+        sorted_cell = SortedGTO.from_cell(cell, decontract=True, diffuse_cutoff=.25)
+        # Bound a group-pair tensor including BvK images and auxiliary AOs.
+        group_size = max(1, int((get_avail_mem()*.5 /
+                                (8*sorted_aux.nao*np.prod(bvkmesh)))**.5))
+        ls = sorted_cell.uniq_l_ctr[:,0]
+        nf = (ls+1)*(ls+2)//2
+        group_nao = np.bincount(sorted_cell.contraction_group_ids,
+                                weights=sorted_cell.l_ctr_counts*nf)
+        if group_nao.max() > group_size:
+            sorted_cell = SortedGTO.from_cell(
+                sorted_cell.cell, group_size=group_size,
+                decontract=True, diffuse_cutoff=.25)
         int3c2e_opt = SRInt3c2eOpt(
-            cell, auxcell, omega=rsdf_omega, bvkmesh=bvkmesh).build(separate_dd=True)
+            sorted_cell, sorted_aux, omega=rsdf_omega,
+            bvkmesh=bvkmesh).build(separate_dd=True)
 
     cell = int3c2e_opt.cell
     auxcell = int3c2e_opt.auxcell
@@ -517,64 +594,61 @@ def compressed_cderi_j_only(cell, auxcell, bvkmesh, omega=None,
     cderi_idx = cp.asarray(pair_addresses, dtype=np.int32), np.empty(0, dtype=np.int32)
     t1 = log.timer_debug1('SR integrals and GPU pair recontraction', *t0)
 
-    # Each destination column slab is completed before the metric changes its
-    # auxiliary dimension. Other slabs still contain untouched raw SR data.
+    # SR and FT share contraction-group pair order. Each FT group recontracts
+    # directly into a contiguous slice of the existing SR allocation.
     aux_coeff = cp.asarray(cd_j2c_cache[0])
     assert naux <= naux_cart
-    mem_free = int(get_avail_mem(exclude_memory_pool=True) * .7)
-    pair_block = max(1, mem_free // (32*(naux_cart + naux)))
-    pair_offsets = [0]
-    if int3c2e_opt.get_n_compact_pairs() > 0:
-        ft_opt = ft_ao.FTOpt.from_intopt(int3c2e_opt)
+    sr_gpu = sr if isinstance(sr, cp.ndarray) else mapped_view(sr)
+    compact_end = 0
+    for columns, ft_opt, params in _j_only_lr_groups(
+            int3c2e_opt, recontraction_params[0], cart):
+        compact_end = columns.stop
+        ncolumns = columns.stop-columns.start
+        mem_free = int(get_avail_mem(exclude_memory_pool=True) * .7)
+        if 8*(naux_cart+naux)*ncolumns > mem_free:
+            raise RuntimeError('Insufficient GPU memory for a contraction-group pair')
+        target = aux_coeff.T.dot(sr_gpu[:,columns])
+        params = tuple(cp.asarray(x) for x in params)
+        mem_free = int(get_avail_mem(exclude_memory_pool=True) * .7)
         ft_batch_size = max(1, mem_free // (64*naux_cart))
         eval_ft, pair_offsets = ft_opt.ft_evaluator(
             batch_size=ft_batch_size, cart=cart, original_ao_order=False)
-    out_idx, out_offsets, coef = recontraction_params[0]
-    max_pairs = int(np.diff(pair_offsets).max(initial=0))
-    pair_mem = 8*((naux_cart+naux)*min(pair_block, nao_pairs) + naux_cart*max_pairs)
-    Gblksize = min(ngrids, (mem_free-pair_mem) //
-                   (16*(max_pairs + 2*naux_cart)))
-    if max_pairs and Gblksize < 1:
-        raise RuntimeError('Insufficient GPU memory for a whole FT shell block')
-    log.debug1('LR output columns/block = %d, FT batches = %d, Gblksize = %d',
-               pair_block, len(pair_offsets)-1, Gblksize)
-    sr_gpu = mapped_view(sr)
-    for q0, q1 in lib.prange(0, nao_pairs, pair_block):
-        target = cp.asarray(sr[:,q0:q1])
-        for batch_id, (p0, p1) in enumerate(zip(pair_offsets[:-1], pair_offsets[1:])):
-            k0, k1 = out_offsets[p0], out_offsets[p1]
-            columns = out_idx[k0:k1]
-            selected = (columns >= q0) & (columns < q1)
-            if not selected.any():
-                continue
-            # Keep whole primitive shell blocks for FT. Restrict only their
-            # scatter destinations; all contributions to this slab must be
-            # added before applying the auxiliary metric.
-            offsets = np.empty(len(selected)+1, dtype=np.int32)
-            offsets[0] = 0
-            np.cumsum(selected, out=offsets[1:])
-            params = (cp.asarray(columns[selected] - q0),
-                      cp.asarray(offsets[out_offsets[p0:p1+1] - k0]),
-                      cp.asarray(coef[k0:k1][selected]))
-            j3c = cp.zeros((p1-p0, naux_cart))
-            for g0, g1 in lib.prange(0, ngrids, Gblksize):
-                auxG = cp.ascontiguousarray(ft_ao.ft_ao(auxcell, Gv[g0:g1]).T)
-                auxG *= cp.asarray(coulG[0,g0:g1])
+        max_pairs = int(np.diff(pair_offsets).max(initial=0))
+        # pqG and its recontracted form are complex; auxG additionally
+        # needs the Cartesian-to-metric transformation workspace.
+        Gblksize = min(ngrids, mem_free //
+                       (16*(max_pairs + ncolumns + 2*naux_cart + naux)))
+        if Gblksize < 1:
+            raise RuntimeError('Insufficient GPU memory for a whole FT shell group')
+        for g0, g1 in lib.prange(0, ngrids, Gblksize):
+            auxG = aux_coeff.T.dot(ft_ao.ft_ao(auxcell, Gv[g0:g1]).T)
+            auxG *= cp.asarray(coulG[0,g0:g1])
+            for batch_id, p0 in enumerate(pair_offsets[:-1]):
                 pqG = eval_ft(Gv[g0:g1], batch_id)
-                contract('pG,rG->pr', pqG.view(np.float64),
-                         auxG.view(np.float64), beta=1, out=j3c)
-                auxG = pqG = None
-            int3c2e._recontract_cderi_gpu(target, j3c, params)
-            j3c = params = None
-        block = aux_coeff.T.dot(target)
-        sr_gpu[:naux,q0:q1] = block
-        block = target = None
+                # Rows interleave real/imaginary G components; columns
+                # are contracted AO pairs in this output group.
+                pqG_contracted = cp.zeros((2*(g1-g0), ncolumns))
+                int3c2e._recontract_cderi_gpu(
+                    pqG_contracted, pqG.view(np.float64), params, pair_start=p0)
+                contract('Gp,rG->rp', pqG_contracted,
+                         auxG.view(np.float64), beta=1, out=target)
+                pqG = pqG_contracted = None
+            auxG = None
+        eval_ft = None
+        sr_gpu[:naux,columns] = target
+        target = None
+    sr_gpu[:naux,compact_end:] = 0.
     cp.cuda.get_current_stream().synchronize()
     # Row truncation preserves C contiguity and retains the original allocation.
     cderi = {0: sr[:naux]}
     t1 = log.timer_debug1('LR integrals and auxiliary metric contraction', *t1)
 
+    if with_dd and isinstance(sr, cp.ndarray):
+        dd_params = tuple(cp.asarray(x) for x in recontraction_params[-1])
+
     def recontract(batch_id, target, j3c, pair_start=0):
+        if isinstance(target, cp.ndarray):
+            return int3c2e._recontract_cderi_gpu(target, j3c, dd_params, pair_start)
         return int3c2e._recontract_cderi(
             target, j3c, recontraction_params[batch_id], pair_start)
 
