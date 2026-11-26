@@ -711,3 +711,44 @@ def test_compressed_orbital_pair_cart2sph():
     reference = incore.aux_e2(mol, auxmol).reshape(mol.nao**2, auxmol.nao)
     np.testing.assert_allclose(converted.dot(opt.auxmol.ctr_coeff).get(),
                                reference[addresses], atol=1e-10, rtol=0)
+
+
+def test_int3c2e_contraction_group_batches():
+    from gpu4pyscf.gto.mole import SortedMole
+    mol = pyscf.M(
+        atom='He 0 0 0; He 0 0 2; He 1 0 0', cart=False,
+        basis=[[0, [3., .5], [.8, .4], [.1, .2]],
+               [2, [3., .5, .2], [.8, .4, -.3], [.1, .2, .7]]])
+    sorted_mol = SortedMole.from_mol(
+        mol, group_size=[4, 1, 4], decontract=True, diffuse_cutoff=.25)
+    auxmol = pyscf.M(atom=mol.atom, basis=[[0, [.9, 1.]]])
+    opt = int3c2e_bdiv.Int3c2eOpt(sorted_mol, auxmol).build()
+    # Each d group has three spherical shells: 225 AO pairs fit exactly,
+    # whereas a batch containing all d-d pairs would exceed this limit.
+    evaluate, _, offsets, _, context = opt.int3c2e_evaluator(
+        cart=False, pair_batch_by_l=True, ao_pair_batch_size=225,
+        return_clone_context=True)
+    assert max(np.diff(offsets)) == 225
+    bas_ij, shell_offsets, splits = context[:3]
+    labels = np.repeat(sorted_mol.contraction_group_ids, sorted_mol.l_ctr_counts)
+    group_pairs = []
+    for p0, p1 in zip(shell_offsets[splits[:-1]].get(),
+                      shell_offsets[splits[1:]].get()):
+        ish, jsh = divmod(bas_ij[p0:p1].get(), sorted_mol.nbas)
+        pairs = np.unique(np.column_stack((labels[ish], labels[jsh])), axis=0)
+        assert len(pairs) == 1
+        group_pairs.append(tuple(pairs[0]))
+    # No contraction-group pair is split across batches, even when its
+    # primitive contributions have different primitive-count patterns.
+    assert len(set(group_pairs)) == len(group_pairs)
+    recontract, _, _, addresses = int3c2e_bdiv._create_pair_recontractor(
+        sorted_mol, context)
+    blocks = [evaluate(i) for i in range(len(offsets)-1)]
+    actual = cp.concatenate([recontract(i, block).dot(opt.aux_coeff)
+                             for i, block in enumerate(blocks)]).get()
+    reference = incore.aux_e2(mol, auxmol).reshape(mol.nao**2, auxmol.nao)
+    np.testing.assert_allclose(actual, reference[addresses], atol=1e-11, rtol=0)
+    # Cartesian conversion must use the same group-pair ordering as batching.
+    cart = opt.int3c2e_evaluator(cart=True)[0]()
+    np.testing.assert_allclose(opt.orbital_pair_cart2sph(cart).get(),
+                               cp.concatenate(blocks).get(), atol=1e-11, rtol=0)

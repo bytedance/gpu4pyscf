@@ -658,6 +658,7 @@ class SortedGTO:
             # Limit the number of AOs in each group
             lmax = l_ctrs[:,0].max()
             if isinstance(group_size, (np.integer, int)):
+                assert group_size > 0
                 ls = np.arange(lmax+1)
                 nf = (ls + 1) * (ls + 2) // 2
                 max_shells = np.maximum(group_size // nf, 1)
@@ -1121,12 +1122,16 @@ class SortedMole(Mole, SortedGTO):
         return bas_ij_idx, shl_pair_offsets
 
     def iter_pair_by_l(self, bas_ij_pairs):
-        '''Iterate over the bas_ij pair in bas_ij_pairs based on the angular
-        momentum of the two bases of each pair
+        '''Iterate over shell-pattern pairs ordered by angular momenta and
+        contraction-group IDs. Each contraction-group pair stays contiguous,
+        including its different primitive-count patterns, for recontraction
+        without contributions from other groups.
         '''
-        uniq_l = self.uniq_l_ctr[:,0].tolist()
-        li_lj = [uniq_l[i]*8+uniq_l[j] for i, j in bas_ij_pairs]
-        sorted_pairs = (k for _, k in sorted(zip(li_lj, bas_ij_pairs)))
+        ls = self.uniq_l_ctr[:,0]
+        ids = self.contraction_group_ids
+        sorted_pairs = iter(sorted(
+            bas_ij_pairs, key=lambda ij: (ls[ij[0]], ls[ij[1]],
+                                         ids[ij[0]], ids[ij[1]], *ij)))
         if isinstance(bas_ij_pairs, dict):
             return ((key, bas_ij_pairs[key]) for key in sorted_pairs)
         return sorted_pairs

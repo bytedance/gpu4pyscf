@@ -29,7 +29,7 @@ from pyscf.gto.mole import (
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.cupy_helper import (
     load_library, contract, dist_matrix, asarray, hermi_triu, transpose_sum,
-    ndarray)
+    ndarray, get_avail_mem)
 from gpu4pyscf.lib.utils import splits_by_blocksize
 from gpu4pyscf.lib import multi_gpu
 from gpu4pyscf.gto.mole import (
@@ -123,8 +123,20 @@ class Int3c2eOpt:
         self.bas_ij_cache = None
 
     def build(self, cutoff=1e-14, tril=True):
-        mol = self.mol = SortedMole.from_cell(self.mol)
         auxmol = self.auxmol = SortedMole.from_cell(self.auxmol)
+        mol = SortedMole.from_cell(self.mol)
+
+        # If a l_ctr group has too many shells, the ao_pair batching in
+        # evaluator method may fail.
+        group_size = int((get_avail_mem() * .5 / (8 * auxmol.nao))**.5)
+        ls = mol.uniq_l_ctr[:,0]
+        nf = (ls + 1) * (ls + 2) // 2
+        group_nao = np.bincount(mol.contraction_group_ids,
+                                weights=mol.l_ctr_counts * nf)
+        if group_nao.max() > group_size:
+            mol = SortedMole.from_mol(mol.mol, group_size=group_size)
+        self.mol = mol
+
         _atm, _bas, _env = conc_env(
             mol._atm, mol._bas, _scale_sp_ctr_coeff(mol),
             auxmol._atm, auxmol._bas, _scale_sp_ctr_coeff(auxmol))
@@ -154,6 +166,11 @@ class Int3c2eOpt:
                           reorder_aux=False, cart=None, pair_batch_by_l=False,
                           return_clone_context=False, clone_context=None,
                           omega=None, lr_factor=None, sr_factor=None):
+        """Create an evaluator for batches of three-center integrals.
+
+        pair_batch_by_l=True actually requires splitting shl_pair according to
+        contraction-group boundaries specified by mol.contraction_group_ids.
+        """
         if self._int3c2e_envs is None:
             self.build()
         mol = self.mol
@@ -171,10 +188,7 @@ class Int3c2eOpt:
             if cart is None:
                 cart = mol.mol.cart
 
-            if pair_batch_by_l:
-                bas_ij_cache = {k: v for k, v in mol.iter_pair_by_l(self.bas_ij_cache)}
-            else:
-                bas_ij_cache = self.bas_ij_cache
+            bas_ij_cache = self.bas_ij_cache
             # Bound pair work alongside the auxiliary-shell task subdivision.
             pair_batch_size = np.minimum(nsp_per_block[0]*4,
                                          np.maximum(nsp_per_block[0]//4, 16))
@@ -188,21 +202,23 @@ class Int3c2eOpt:
                 ao_pair_offsets = np.array([0, nao_pair])
 
             elif pair_batch_by_l:
-                uniq_l = mol.uniq_l_ctr[:,0].tolist()
+                # A batch contains a complete contraction-group pair, so its
+                # AO pairs can be recontracted without another batch's data.
+                ids = mol.contraction_group_ids
                 pair_batch_sizes = []
                 last_key = None
                 for (i, j), bas_ij in bas_ij_cache.items():
-                    key = (uniq_l[i], uniq_l[j])
+                    key = (ids[i], ids[j])
                     if key != last_key:
                         last_key = key
                         pair_batch_sizes.append(bas_ij.size)
                     else:
                         pair_batch_sizes[-1] += bas_ij.size
                 ao_pair_offsets = ao_pair_loc[shl_pair_offsets].get()
-                pair_splits = np.append(0, np.searchsorted(
-                    shl_pair_offsets.get(), np.cumsum(pair_batch_sizes), side='left'))
+                pair_splits = np.unique(np.append(0, np.searchsorted(
+                    shl_pair_offsets.get(), np.cumsum(pair_batch_sizes), side='left')))
                 ao_pair_offsets = ao_pair_offsets[pair_splits]
-                assert max(ao_pair_offsets[1:]-ao_pair_offsets[:-1]) < ao_pair_batch_size
+                assert max(ao_pair_offsets[1:]-ao_pair_offsets[:-1]) <= ao_pair_batch_size
 
             else:
                 ao_pair_offsets = ao_pair_loc[shl_pair_offsets].get()
@@ -456,7 +472,7 @@ class Int3c2eOpt:
         '''Transforms the AO of the compressed eri3c from Cartesian to spherical basis'''
         mol = self.mol
         uniq_l = mol.uniq_l_ctr[:,0]
-        bas_ij_cache = {k: v for k, v in mol.iter_pair_by_l(self.bas_ij_cache)}
+        bas_ij_cache = self.bas_ij_cache
         bas_ij_idx = mol.aggregate_shl_pairs(bas_ij_cache, 1000000000)[0]
         cart_pair_loc = get_ao_pair_loc(uniq_l, bas_ij_cache, cart=True)
         assert compressed_eri3c.shape[0] == cart_pair_loc[-1].get(), \
@@ -507,7 +523,7 @@ class Int3c2eOpt:
         offset = 0
         diag = []
         ao_pair_addresses = []
-        for (i, j), bas_ij in mol.iter_pair_by_l(self.bas_ij_cache):
+        for (i, j), bas_ij in self.bas_ij_cache.items():
             ish, jsh = divmod(bas_ij, nbas)
             iaddr = ao_loc[ish,None] + carts[i]
             jaddr = ao_loc[jsh,None] + carts[j]
