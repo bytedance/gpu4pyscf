@@ -19,7 +19,6 @@ import numpy as np
 import cupy as cp
 import scipy.linalg
 from pyscf import gto
-from pyscf.lib.misc import _blocksize_partition
 from pyscf.pbc import gto as pbcgto
 from pyscf.gto import (ANG_OF, ATOM_OF, NPRIM_OF, NCTR_OF, PTR_COORD, PTR_COEFF,
                        PTR_EXP)
@@ -317,19 +316,13 @@ def group_basis(mol, tile=1, group_size=None, return_bas_mapping=False,
         else:
             return mol, ao_idx, l_ctr_pad_counts, uniq_l_ctr, l_ctr_counts
 
-def _split_l_ctr_groups(uniq_l_ctr, l_ctr_counts, group_size, align=1,
-                        orig_shell_idx=None):
+def _split_l_ctr_groups(uniq_l_ctr, l_ctr_counts, group_size, align=1):
     '''Splits l_ctr patterns into small groups with group_size the maximum
-    number of AOs in each group. If orig_shell_idx is provided, boundaries
-    within each pattern must also separate original contracted shells.
+    number of AOs in each group.
     '''
     _l_ctrs = []
     _l_ctr_counts = []
-    offset = 0
     for l_ctr, counts in zip(uniq_l_ctr, l_ctr_counts):
-        if orig_shell_idx is not None:
-            shell_ids = orig_shell_idx[offset:offset+counts]
-        offset += counts
         l = l_ctr[0]
         nf = (l + 1) * (l + 2) // 2
         if isinstance(group_size, (int, np.integer)):
@@ -341,17 +334,6 @@ def _split_l_ctr_groups(uniq_l_ctr, l_ctr_counts, group_size, align=1,
         if counts <= max_shells:
             _l_ctrs.append(l_ctr)
             _l_ctr_counts.append(counts)
-            continue
-
-        if orig_shell_idx is not None:
-            # Stable sorting keeps each original shell's contributions
-            # contiguous within this (l, nprim) pattern.
-            changes = np.flatnonzero(shell_ids[1:] != shell_ids[:-1]) + 1
-            shell_offsets = np.concatenate(([0], changes, [counts]))
-            splits = _blocksize_partition(shell_offsets, max_shells)
-            sub_counts = np.diff(shell_offsets[splits])
-            _l_ctrs.extend([l_ctr] * len(sub_counts))
-            _l_ctr_counts.extend(sub_counts)
             continue
 
         nsubs, remaining = counts.__divmod__(max_shells)
@@ -630,9 +612,12 @@ class SortedGTO:
         Parameters
         ----------
         group_size : int or sequence, optional
-            Limit group sizes without splitting an original contracted
-            shell's contributions within an (l, nprim) pattern. An integer
-            specifies Cartesian AOs; a sequence specifies shells per l.
+            Limit group sizes without splitting a contracted shell's primitive
+            contributions, including those in different (l, nprim) patterns.
+            Groups contain a single angular momentum. An integer specifies
+            the maximum number of Cartesian AOs; a sequence specifies the
+            number of shells per l. A contraction exceeding its shell limit
+            raises ValueError.
         decontract : bool, optional
             If enabled, decontract generally contractions into primitives.
             Otherwise, simply split general contractions into segment-contracted shells,
@@ -659,12 +644,64 @@ class SortedGTO:
         # Sort basis according to angular momentum and contraction patterns so
         # as to group the basis functions to blocks in GPU kernel.
         l_ctrs = self._bas[:,[ANG_OF, NPRIM_OF]]
-        # Ensure the more contracted Gaussians being accessed first
-        l_ctrs_descend = l_ctrs.copy()
-        l_ctrs_descend[:,1] = -l_ctrs[:,1]
-        uniq_l_ctr, where, inv_idx, l_ctr_counts = np.unique(
-            l_ctrs_descend, return_index=True, return_inverse=True, return_counts=True, axis=0)
-        uniq_l_ctr[:,1] = -uniq_l_ctr[:,1]
+
+        if group_size is None:
+            # Ensure the more contracted Gaussians being accessed first
+            l_ctrs_descend = l_ctrs.copy()
+            l_ctrs_descend[:,1] = -l_ctrs[:,1]
+            uniq_l_ctr, where, inv_idx, l_ctr_counts = np.unique(
+                l_ctrs_descend, return_index=True, return_inverse=True, return_counts=True, axis=0)
+            uniq_l_ctr[:,1] = -uniq_l_ctr[:,1]
+            # All shells with the same l share a contraction group
+            contraction_group_ids = uniq_l_ctr[:,0]
+        else:
+            # Limit the number of AOs in each group
+            lmax = l_ctrs[:,0].max()
+            if isinstance(group_size, (np.integer, int)):
+                ls = np.arange(lmax+1)
+                nf = (ls + 1) * (ls + 2) // 2
+                max_shells = np.maximum(group_size // nf, 1)
+            else:
+                assert len(group_size) >= lmax+1
+                max_shells = group_size
+
+            # shell_group_ids contains one group ID per primitive shell.
+            shell_group_ids = np.empty(self.nbas, dtype=np.int32)
+            # Shells with the same group ID are evaluated together and can be
+            # recontracted without contributions from other groups.
+            # Group-label rules:
+            # - Primitive shells for the same contracted shell must have the same label.
+            # - Shells with the same group must have the same l.
+            # - Each group contains at most max_shells[l] primitive shells.
+            # - Shells on different atoms may share a label.
+            group_id = 0
+            for l in range(lmax+1):
+                c_shells = recontract_bas[recontract_bas[:,ANG_OF] == l]
+                if len(c_shells) == 0:
+                    continue
+                if c_shells[:,NPRIM_OF].sum() <= max_shells[l]:
+                    shell_group_ids[l_ctrs[:,0] == l] = group_id
+                    group_id += 1
+                    continue
+
+                count = 0
+                for shell in c_shells:
+                    p0 = shell[PTR_PBAS_IDX]
+                    nprim = shell[NPRIM_OF]
+                    if count + nprim > max_shells[l]:
+                        group_id += 1
+                        count = 0
+                    shell_group_ids[p0:p0+nprim] = group_id
+                    count += nprim
+                if count > 0:
+                    group_id += 1
+
+            pattern = np.column_stack(
+                (l_ctrs[:,0], shell_group_ids, -l_ctrs[:,1]))
+            uniq_pattern, where, inv_idx, l_ctr_counts = np.unique(
+                pattern, return_index=True, return_inverse=True, return_counts=True, axis=0)
+            contraction_group_ids = np.array(uniq_pattern[:,1], dtype=np.int32)
+            uniq_l_ctr = np.column_stack((uniq_pattern[:,0], -uniq_pattern[:,2]))
 
         sorted_idx = np.argsort(inv_idx.ravel(), kind='stable')
         self._bas = np.asarray(self._bas[sorted_idx], dtype=np.int32)
@@ -674,12 +711,6 @@ class SortedGTO:
         # Maps generated shells in recontraction order to sorted shells.
         # Each recontract_bas row starts at PTR_PBAS_IDX in this array.
         self.recontraction_idx = inv_sorted
-
-        # Limit the number of AOs in each group
-        if group_size is not None:
-            uniq_l_ctr, l_ctr_counts = _split_l_ctr_groups(
-                uniq_l_ctr, l_ctr_counts, group_size,
-                orig_shell_idx=self.get_orig_shell_idx())
 
         if mol.verbose >= logger.DEBUG1:
             logger.debug1(mol, 'Number of shells for each [l, nprim] group')
@@ -691,6 +722,8 @@ class SortedGTO:
 
         self.uniq_l_ctr = uniq_l_ctr
         self.l_ctr_counts = l_ctr_counts
+        # One contraction-group ID per (l, nprim) pattern entry in uniq_l_ctr.
+        self.contraction_group_ids = contraction_group_ids
         self.p_ao_loc = self.ao_loc_nr(cart=True)
 
         # cache envs

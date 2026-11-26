@@ -160,6 +160,62 @@ def test_apply_C_dot():
     dat = mol.apply_C_dot(c, axis=1)
     assert abs(ref - dat).max() < 1e-15
 
+def test_sorted_mol_contraction_groups():
+    group_size = [4, 1, 4]
+    # No p shells: also exercise an absent angular momentum. Decontraction
+    # splits each s contraction into compact and diffuse shells with different
+    # nprim patterns, which must still belong to the same contraction group.
+    mol = pyscf.M(
+        atom='He 0 0 0; He 0 0 2; He 1 0 0', cart=False,
+        basis=[[0, [3., .5], [.8, .4], [.1, .2]],
+               [2, [3., .5, .2], [.8, .4, -.3], [.1, .2, .7]]])
+    sorted_mol = mole_gpu.SortedMole.from_mol(
+        mol, group_size=group_size, decontract=True, diffuse_cutoff=.25)
+    ids = sorted_mol.contraction_group_ids
+    np.testing.assert_array_equal(ids, [0, 0, 1, 1, 2, 3, 4])
+    counts = sorted_mol.l_ctr_counts
+    patterns = sorted_mol.uniq_l_ctr
+    assert len(ids) == len(counts) == len(patterns)
+    assert counts.sum() == sorted_mol.nbas
+    labels = np.repeat(ids, counts)
+    np.testing.assert_array_equal(
+        np.repeat(patterns, counts, axis=0),
+        sorted_mol._bas[:,[mole_gpu.ANG_OF, mole_gpu.NPRIM_OF]])
+
+    # A contracted shell must obtain all its primitive contributions from
+    # one group, even when those primitives have different nprim patterns.
+    # p0:p1 identifies its primitives before sorting; recontraction_idx maps
+    # them to sorted shell positions, where labels stores their group IDs.
+    for shell in sorted_mol.recontract_bas:
+        p0 = shell[mole_gpu.PTR_PBAS_IDX]
+        p1 = p0 + shell[mole_gpu.NPRIM_OF]
+        primitive_shells = sorted_mol.recontraction_idx[p0:p1]
+        assert len(np.unique(labels[primitive_shells])) == 1
+
+    for label in np.unique(ids):
+        group = labels == label
+        ls = np.unique(sorted_mol._bas[group, mole_gpu.ANG_OF])
+        assert len(ls) == 1
+        l = int(ls[0])
+        assert group.sum() <= group_size[l]
+
+    # Verify that this basis exercises partitioning for both s and d shells,
+    # rather than fitting all shells of an l into a single group. Keeping each
+    # contraction intact is checked separately by the loop over recontract_bas.
+    for l in (0, 2):
+        # The total number of shells for this l exceeds one group's capacity.
+        assert counts[patterns[:,0] == l].sum() > group_size[l]
+        # The resulting labels must therefore identify multiple groups.
+        assert len(np.unique(ids[patterns[:,0] == l])) > 1
+
+    c = sorted_mol.ctr_coeff.get()
+    ao_labels = np.repeat(labels, np.diff(sorted_mol.p_ao_loc))
+    for coeff in c.T:
+        assert len(np.unique(ao_labels[coeff != 0])) == 1
+    overlap = sorted_mol.intor('int1e_ovlp')
+    np.testing.assert_allclose(c.T @ overlap @ c, mol.intor('int1e_ovlp'),
+                               atol=1e-12, rtol=1e-12)
+
 def test_basis_recontraction():
     def check(mol, decontract=True, diffuse_cutoff=None):
         ref = mol.intor('int1e_ovlp')
